@@ -8,7 +8,13 @@
 """
 import subprocess
 import sys
+import io
 from pathlib import Path
+
+# Fix Windows encoding issues with emoji characters
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # 阈值配置
 LARGE_FILE_WARN_KB = 500

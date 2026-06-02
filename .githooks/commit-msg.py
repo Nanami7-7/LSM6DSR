@@ -7,7 +7,13 @@
 """
 import sys
 import re
+import io
 from pathlib import Path
+
+# Fix Windows encoding issues with emoji characters
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 VALID_TYPES = {
     'feat', 'fix', 'refactor', 'docs', 'chore',
@@ -32,6 +38,7 @@ def main() -> int:
         return 1
 
     msg = msg_file.read_text(encoding='utf-8').strip()
+    msg = msg.lstrip('\ufeff')  # Strip UTF-8 BOM
 
     # 跳过空消息（注释行）
     lines = [line for line in msg.splitlines() if not line.startswith('#')]
