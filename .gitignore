@@ -26,3 +26,18 @@ MDK-ARM/*.uvguix*
 *.pdf
 
 docs/debug_history.md
+
+# Test artifacts
+test/build/
+test/*.exe
+test/*.out
+test/*.o
+test/*.log
+test/*.csv
+test/results/
+
+# Python test environment
+test/__pycache__/
+test/*.pyc
+test/.pytest_cache/
+test/venv/

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -43,9 +44,14 @@ static int     var_samples;                /**< 已采帧数 */
 static float   alpha;                      /**< 当前互补滤波 α */
 static float   last_variance;              /**< 上一帧方差 (调试用) */
 
+/* ---- Filter instance ---- */
+static filter_t *active_filter = NULL;  /**< 当前活动滤波器实例 */
+static filter_type_t current_filter_type = FILTER_TYPE_COMPLEMENTARY;  /**< 当前滤波器类型 */
+
 /* ---- Production API cache ---- */
 static bsp_lsm6dsr_data_t last_data; /**< 最新数据缓存 */
 static int     is_stationary;         /**< 最新静止状态 */
+
 
 /**
  * @brief  计算 ACC 3 轴方差总和
@@ -80,6 +86,27 @@ static float compute_acc_variance(void)
 
     last_variance = vx + vy + vz;
     return last_variance;
+}
+
+/**
+ * @brief  初始化滤波器状态
+ * @param  ax0  初始加速度 X (g)
+ * @param  ay0  初始加速度 Y (g)
+ * @param  az0  初始加速度 Z (g)
+ */
+static void init_filter_state(float ax0, float ay0, float az0)
+{
+    pitch = atan2(-ax0, sqrt(ay0*ay0 + az0*az0)) * 180.0 / M_PI;
+    roll  = atan2( ay0, sqrt(ax0*ax0 + az0*az0)) * 180.0 / M_PI;
+    yaw   = 0.0;
+
+    var_buf_idx = 0;
+    var_samples = BSP_ACC_VAR_WINDOW;
+    for (int i = 0; i < BSP_ACC_VAR_WINDOW; i++) {
+        ax_buf[i] = ax0; ay_buf[i] = ay0; az_buf[i] = az0;
+    }
+    alpha = BSP_ALPHA_STATIONARY;
+    last_variance = 0.0f;
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,20 +155,17 @@ void bsp_lsm6dsr_init(void)
         float ax0, ay0, az0;
         lsm6dsr_read_accel_float(&lsm6dsr_io, &ax0, &ay0, &az0,
                                  LSM6DSR_ACCEL_FS_4G);
-
-        pitch = atan2(-ax0, sqrt(ay0*ay0 + az0*az0)) * 180.0 / M_PI;
-        roll  = atan2( ay0, sqrt(ax0*ax0 + az0*az0)) * 180.0 / M_PI;
-        yaw   = 0.0;
-
-        /* fill variance window with initial values */
-        var_buf_idx = 0;
-        var_samples = BSP_ACC_VAR_WINDOW;
-        for (int i = 0; i < BSP_ACC_VAR_WINDOW; i++) {
-            ax_buf[i] = ax0; ay_buf[i] = ay0; az_buf[i] = az0;
-        }
-        alpha = BSP_ALPHA_STATIONARY;
-        last_variance = 0.0f;
+        init_filter_state(ax0, ay0, az0);
     }
+
+    /* ---- Create filter instance ---- */
+    active_filter = filter_create(current_filter_type);
+    if (!active_filter) {
+        printf("  ERROR: Failed to create filter\r\n");
+        while (1);  /* 阻塞报错 */
+    }
+    printf("  Filter: %s\r\n", filter_type_name(current_filter_type));
+
 
     printf("  Initial pitch=%.2f  roll=%.2f\r\n",
            (double)pitch, (double)roll);
@@ -260,16 +284,9 @@ void bsp_lsm6dsr_calibrate(void)
  *     - 校准有效时 fg -= bg
  *     - 静止时 bg += rate × fg (X/Y 用 0.05, Z 用 0.005)
  *
- *  **6. 自适应 α 平滑**:
- *     - 目标 α = 静止 ? BSP_ALPHA_STATIONARY : BSP_ALPHA_MOVING
- *     - 每帧向目标靠近 BSP_ALPHA_SMOOTH_STEP
+ *  **6. 滤波器更新**: 使用 filter_t 接口调用当前活动滤波器
  *
- *  **7. 互补滤波器**:
- *     - pitch = α × (pitch + gyro_pitch × dt) + (1-α) × acc_pitch
- *     - roll  = α × (roll  - gyro_roll  × dt) + (1-α) × acc_roll
- *     - yaw  += gz × dt  (纯 GYRO 积分，无 ACC 参考)
- *
- *  **8. 结果填充**: data→ax/ay/az 为 m/s²; gx/gy/gz 为偏置补偿后 dps
+ *  **7. 结果填充**: data→ax/ay/az 为 m/s²; gx/gy/gz 为偏置补偿后 dps
  */
 void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
 {
@@ -323,23 +340,30 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
         }
     }
 
-    /* ---- smooth alpha transition ---- */
-    float target_alpha = stationary ? BSP_ALPHA_STATIONARY : BSP_ALPHA_MOVING;
-    if (alpha < target_alpha) {
-        alpha += BSP_ALPHA_SMOOTH_STEP;
-        if (alpha > target_alpha) alpha = target_alpha;
-    } else if (alpha > target_alpha) {
-        alpha -= BSP_ALPHA_SMOOTH_STEP;
-        if (alpha < target_alpha) alpha = target_alpha;
+    /* ---- update filter ---- */
+    if (active_filter) {
+        filter_input_t fin = {
+            .ax = fax, .ay = fay, .az = faz,
+            .gx = fgx, .gy = fgy, .gz = fgz,
+            .dt = (float)dt
+        };
+        filter_output_t fout;
+        active_filter->update(active_filter, &fin, &fout);
+
+        data->pitch = fout.pitch;
+        data->roll  = fout.roll;
+        data->yaw   = fout.yaw;
+    } else {
+        /* fallback: 互补滤波器 (should not happen) */
+        double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
+        double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
+        pitch = 0.98 * (pitch + fgy * dt) + 0.02 * acc_pitch;
+        roll  = 0.98 * (roll  - fgx * dt) + 0.02 * acc_roll;
+        yaw  += fgz * dt;
+        data->pitch = (float)pitch;
+        data->roll  = (float)roll;
+        data->yaw   = (float)yaw;
     }
-
-    /* ---- complementary filter ---- */
-    double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
-    double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
-
-    pitch = (double)alpha * (pitch + fgy * dt) + (1.0 - (double)alpha) * acc_pitch;
-    roll  = (double)alpha * (roll  - fgx * dt) + (1.0 - (double)alpha) * acc_roll;
-    yaw  += fgz * dt;
 
     /* ---- fill result struct ---- */
     data->ax    = fax * 0.00980665f;
@@ -348,9 +372,6 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
     data->gx    = fgx;
     data->gy    = fgy;
     data->gz    = fgz;
-    data->pitch = (float)pitch;
-    data->roll  = (float)roll;
-    data->yaw   = (float)yaw;
 
     /* ---- cache for production API ---- */
     last_data = *data;
@@ -423,4 +444,78 @@ int bsp_lsm6dsr_vofa_format(char *buf, int buf_size, const bsp_lsm6dsr_data_t *d
         (double)data->ax, (double)data->ay, (double)data->az,
         (double)data->gx, (double)data->gy, (double)data->gz,
         data->pitch, data->roll, data->yaw, data->temperature);
+}
+
+/* ------------------------------------------------------------------ */
+/**
+ * @brief  切换滤波器类型
+ * @param  type  滤波器类型 (FILTER_TYPE_*)
+ * @return 0=成功, -1=失败
+ * @details 运行时切换滤波器，会销毁旧滤波器并创建新滤波器。
+ *          新滤波器使用默认参数，可通过 bsp_lsm6dsr_set_filter_param() 调整。
+ */
+int bsp_lsm6dsr_set_filter(filter_type_t type)
+{
+    if (type < 0 || type >= FILTER_TYPE_COUNT) {
+        printf("  ERROR: Invalid filter type %d\r\n", type);
+        return -1;
+    }
+
+    /* 销毁旧滤波器 */
+    if (active_filter) {
+        active_filter->destroy(active_filter);
+        active_filter = NULL;
+    }
+
+    /* 创建新滤波器 */
+    active_filter = filter_create(type);
+    if (!active_filter) {
+        printf("  ERROR: Failed to create filter type %d\r\n", type);
+        return -1;
+    }
+
+    current_filter_type = type;
+    printf("  Filter switched to: %s\r\n", filter_type_name(type));
+    return 0;
+}
+
+/**
+ * @brief  获取当前滤波器类型
+ * @return 当前滤波器类型
+ */
+filter_type_t bsp_lsm6dsr_get_filter_type(void)
+{
+    return current_filter_type;
+}
+
+/**
+ * @brief  设置滤波器参数
+ * @param  param  参数枚举
+ * @param  value  参数值
+ * @return 0=成功, -1=失败
+ */
+int bsp_lsm6dsr_set_filter_param(filter_param_t param, float value)
+{
+    if (!active_filter) {
+        printf("  ERROR: No active filter\r\n");
+        return -1;
+    }
+
+    if (param < 0 || param >= FILTER_PARAM_COUNT) {
+        printf("  ERROR: Invalid filter param %d\r\n", param);
+        return -1;
+    }
+
+    active_filter->set_param(active_filter, param, value);
+    printf("  Filter param %d set to %.4f\r\n", param, (double)value);
+    return 0;
+}
+
+/**
+ * @brief  获取滤波器类型名称
+ * @return 类型名称字符串
+ */
+const char* bsp_lsm6dsr_get_filter_name(void)
+{
+    return filter_type_name(current_filter_type);
 }

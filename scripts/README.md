@@ -6,9 +6,9 @@ LSM6DSR 项目自动化脚本集合。
 
 | 脚本 | 用途 |
 |------|------|
-| `sync-to-platforms.sh` | 同步 master 通用层到所有平台分支 |
+| `sync-to-platforms.py` | 同步 master 通用层到所有平台分支 |
 
-## sync-to-platforms.sh
+## sync-to-platforms.py
 
 ### 功能
 
@@ -26,8 +26,17 @@ LSM6DSR 项目自动化脚本集合。
 git checkout master
 git status  # 确认无未提交修改
 
+# 预览同步（不实际执行）
+uv run scripts/sync-to-platforms.py --dry-run
+
 # 执行同步
-./scripts/sync-to-platforms.sh
+uv run scripts/sync-to-platforms.py
+
+# 只同步指定分支
+uv run scripts/sync-to-platforms.py --branch stm32f407
+
+# 强制同步（丢弃平台本地修改）
+uv run scripts/sync-to-platforms.py --force
 ```
 
 ### 工作流程
@@ -36,7 +45,7 @@ git status  # 确认无未提交修改
 2. 遍历 4 个平台分支
 3. 切换到平台分支，执行 `git merge master --no-edit`
 4. 合并成功 → 继续下一个分支
-5. 合并冲突 → 暂停，输出冲突文件列表，提示手动解决
+5. 合并冲突 → 自动中止，输出冲突文件列表，提示手动解决
 
 ### 冲突处理
 
@@ -58,16 +67,16 @@ git commit --no-edit
 git checkout master
 
 # 6. 重新运行脚本（会跳过已完成的分支）
-./scripts/sync-to-platforms.sh
+uv run scripts/sync-to-platforms.py
 ```
 
 ### 注意事项
 
 - **运行前必须在 master 分支** 且工作区干净
-- 脚本使用 `set -euo pipefail`，任何错误会立即终止
-- 冲突时脚本不会自动解决，需要手动处理
+- 冲突时脚本会自动中止合并，需要手动处理
 - 建议先 `git push origin master` 再同步，方便回溯
 - 每个平台分支合并后会立即切换到下一个分支
+- 使用 `--force` 会丢弃平台分支的本地修改，请谨慎使用
 
 ### 典型使用场景
 
@@ -79,8 +88,11 @@ git checkout master
 git add -A && git commit -m "fix: update driver logic"
 git push origin master
 
-# 同步到所有平台
-./scripts/sync-to-platforms.sh
+# 预览同步
+uv run scripts/sync-to-platforms.py --dry-run
+
+# 执行同步
+uv run scripts/sync-to-platforms.py
 
 # 推送所有平台分支
 git push origin stm32f407 mspm0g3507 ch32 at32
@@ -92,5 +104,13 @@ git push origin stm32f407 mspm0g3507 ch32 at32
 git checkout master
 # ... 添加新文件 ...
 git add -A && git commit -m "feat: add new common header"
-./scripts/sync-to-platforms.sh
+uv run scripts/sync-to-platforms.py
 ```
+
+### 命令行参数
+
+| 参数 | 说明 |
+|------|------|
+| `--dry-run` | 预览模式，不实际执行 |
+| `--branch <name>` | 只同步指定分支 |
+| `--force` | 强制同步（丢弃平台本地修改） |

@@ -16,6 +16,7 @@
 #define BSP_LSM6DSR_H
 
 #include <stdint.h>
+#include "filter.h"  /**< 滤波器统一接口 */
 
 /** @defgroup BSP_Calib 校准参数 */
 /**@{*/
@@ -149,5 +150,41 @@ int bsp_lsm6dsr_is_stationary(void);
 int bsp_lsm6dsr_vofa_format(char *buf, int buf_size, const bsp_lsm6dsr_data_t *data);
 
 /**@}*/
+
+/** @defgroup BSP_Filter_API 滤波器切换 API */
+/**@{*/
+
+/**
+ * @brief  切换滤波器类型
+ * @param  type  滤波器类型 (FILTER_TYPE_*)
+ * @return 0=成功, -1=失败
+ * @details 运行时切换滤波器，会销毁旧滤波器并创建新滤波器。
+ *          新滤波器使用默认参数，可通过 bsp_lsm6dsr_set_filter_param() 调整。
+ */
+int bsp_lsm6dsr_set_filter(filter_type_t type);
+
+/**
+ * @brief  获取当前滤波器类型
+ * @return 当前滤波器类型
+ */
+filter_type_t bsp_lsm6dsr_get_filter_type(void);
+
+/**
+ * @brief  设置滤波器参数
+ * @param  param  参数枚举
+ * @param  value  参数值
+ * @return 0=成功, -1=失败
+ */
+int bsp_lsm6dsr_set_filter_param(filter_param_t param, float value);
+
+/**
+ * @brief  获取滤波器类型名称
+ * @return 类型名称字符串
+ */
+const char* bsp_lsm6dsr_get_filter_name(void);
+
+/**@}*/
+
+#endif /* BSP_LSM6DSR_H */
 
 #endif /* BSP_LSM6DSR_H */
