@@ -1,0 +1,76 @@
+{
+  "active_plan": "D:\\Destop\\test\\LSM6DSR\\.sisyphus\\plans\\git-multi-branch-management.md",
+  "started_at": "2026-06-02T15:21:17.158Z",
+  "session_ids": [
+    "ses_177783d5fffeF6qU2wbVAVZ2Ue"
+  ],
+  "session_origins": {
+    "ses_177783d5fffeF6qU2wbVAVZ2Ue": "direct"
+  },
+  "plan_name": "git-multi-branch-management",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "审计当前文件，分类通用 vs 平台特定",
+      "session_id": "ses_177121119ffed9mxgV76f1maUA",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-02T15:25:05.670Z"
+    },
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "清理 master 分支，仅保留通用代码",
+      "session_id": "ses_1770ee66effekI47MoZf8aKOqF",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-06-02T15:46:47.632Z"
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "创建 stm32f407 平台分支",
+      "session_id": "ses_176f66876ffe2DSfiE8xYdqn11",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-06-02T15:59:15.622Z"
+    },
+    "todo:7": {
+      "task_key": "todo:7",
+      "task_label": "7",
+      "task_title": "创建自动同步脚本",
+      "session_id": "ses_176e4551cffemnuFu1HVoGlST1",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-02T16:17:04.073Z"
+    },
+    "todo:8": {
+      "task_key": "todo:8",
+      "task_label": "8",
+      "task_title": "创建分支管理工作流文档",
+      "session_id": "ses_176deed31ffe7m59H592RYsLOr",
+      "agent": "Sisyphus-Junior",
+      "category": "writing",
+      "updated_at": "2026-06-02T16:21:51.140Z"
+    },
+    "todo:9": {
+      "task_key": "todo:9",
+      "task_label": "9",
+      "task_title": "清理旧分支 + 推送到远程",
+      "session_id": "ses_176da99e0ffeCdJ6PPKFNm3ANt",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-02T16:26:56.209Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_176d619aaffeIGdViisjcHl8Aw",
+      "agent": "oracle",
+      "updated_at": "2026-06-02T16:37:18.473Z"
+    }
+  }
+}
