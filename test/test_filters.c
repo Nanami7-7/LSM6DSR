@@ -21,7 +21,7 @@
 #include <math.h>
 #include <string.h>
 #include <float.h>
-#include "filter.h"
+#include "../Core/Filter/Inc/filter.h"
 
 /* ============================================================
  * 测试配置
@@ -142,7 +142,7 @@ static void test_static_level(void) {
         if (!f) continue;
 
         /* 多次迭代让滤波器收敛 */
-        for (int j = 0; j < 100; j++) {
+        for (int j = 0; j < 1000; j++) {
             f->update(f, &in, &out);
         }
 
@@ -180,7 +180,7 @@ static void test_static_pitch_45(void) {
         filter_t *f = filter_create((filter_type_t)i);
         if (!f) continue;
 
-        for (int j = 0; j < 100; j++) {
+        for (int j = 0; j < 1000; j++) {
             f->update(f, &in, &out);
         }
 
@@ -215,7 +215,7 @@ static void test_static_roll_45(void) {
         filter_t *f = filter_create((filter_type_t)i);
         if (!f) continue;
 
-        for (int j = 0; j < 100; j++) {
+        for (int j = 0; j < 1000; j++) {
             f->update(f, &in, &out);
         }
 

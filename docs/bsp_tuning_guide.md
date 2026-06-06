@@ -408,3 +408,138 @@ void app_process(void)
     }
 }
 ```
+
+---
+
+## 8. 滤波器库
+
+### 8.1 概述
+
+滤波器库位于 `Core/Filter/` 目录，提供统一的姿态估计算法接口。当前支持 6 种滤波器，可通过工厂函数动态创建和切换。
+
+### 8.2 滤波器类型
+
+| 类型 | 枚举值 | 状态维度 | 特点 | 适用场景 |
+|------|--------|----------|------|----------|
+| Complementary | `FILTER_TYPE_COMPLEMENTARY` | 3 | 经典α权重融合 | 通用场景 |
+| LPF | `FILTER_TYPE_LPF` | 3 | 一阶低通滤波 | 噪声滤除 |
+| EKF | `FILTER_TYPE_EKF` | 7 | 扩展卡尔曼 + 偏置估计 | 高精度需求 |
+| LKF | `FILTER_TYPE_LKF` | 6 | 线性卡尔曼 + 偏置估计 | 计算资源受限 |
+| Mahony | `FILTER_TYPE_MAHONY` | 4 | PI控制器互补 | 动态场景 |
+| Madgwick | `FILTER_TYPE_MADGWICK` | 4 | 梯度下降法 | 计算量小 |
+
+### 8.3 使用方法
+
+**基本使用**
+
+```c
+#include "filter.h"
+#include "filter_config.h"
+
+/* 创建滤波器 */
+filter_t *f = filter_create(FILTER_TYPE_MADGWICK);
+if (!f) { /* 错误处理 */ }
+
+/* 可选：应用预设配置 */
+filter_config_apply_preset(f, FILTER_PRESET_HIGH_PRECISION);
+
+/* 循环更新 */
+while (1) {
+    filter_input_t in = {
+        .ax = acc[0], .ay = acc[1], .az = acc[2],
+        .gx = gyro[0], .gy = gyro[1], .gz = gyro[2],
+        .dt = 0.01f
+    };
+    filter_output_t out;
+    f->update(f, &in, &out);
+    printf("pitch=%.2f roll=%.2f yaw=%.2f\n", out.pitch, out.roll, out.yaw);
+}
+
+/* 释放 */
+f->destroy(f);
+```
+
+**运行时切换滤波器**
+
+```c
+/* 销毁旧滤波器，创建新滤波器 */
+f->destroy(f);
+f = filter_create(FILTER_TYPE_EKF);
+filter_config_apply_preset(f, FILTER_PRESET_ROBUST);
+```
+
+### 8.4 预设配置
+
+| 预设 | 说明 | 典型参数调整 |
+|------|------|-------------|
+| `FILTER_PRESET_DEFAULT` | 默认平衡配置 | 原始参数 |
+| `FILTER_PRESET_HIGH_PRECISION` | 高精度，响应较慢 | EKF: Q_angle↓, R_measure↑ |
+| `FILTER_PRESET_FAST_RESPONSE` | 快速响应，噪声较大 | Mahony: kp↑, Madgwick: beta↑ |
+| `FILTER_PRESET_ROBUST` | 抗干扰强 | EKF: Q_angle↑, R_measure↓ |
+| `FILTER_PRESET_LOW_POWER` | 低功耗，计算量小 | 使用LPF或互补滤波器 |
+
+### 8.5 退化模式
+
+传感器数据异常时，可手动或自动切换退化模式：
+
+```c
+/* 检查传感器质量 */
+if (!filter_check_acc_quality(ax, ay, az)) {
+    filter_set_degrade(f, FILTER_DEGRADE_GYRO_ONLY);
+} else {
+    filter_set_degrade(f, FILTER_DEGRADE_NONE);
+}
+```
+
+| 模式 | 说明 | 使用场景 |
+|------|------|----------|
+| `FILTER_DEGRADE_NONE` | 正常运行 | 传感器正常 |
+| `FILTER_DEGRADE_GYRO_ONLY` | 仅用陀螺仪积分 | ACC异常（跌落/碰撞） |
+| `FILTER_DEGRADE_ACC_ONLY` | 仅用加速度计 | GYRO饱和 |
+| `FILTER_DEGRADE_STATIC_ONLY` | 仅静态模式 | 强振动环境 |
+| `FILTER_DEGRADE_HOLD_LAST` | 冻结输出 | 传感器完全失效 |
+
+### 8.6 MCU友好设计（静态分配）
+
+嵌入式场景避免动态内存分配：
+
+```c
+/* 查询所需缓冲区大小 */
+size_t buf_size = filter_get_static_size(FILTER_TYPE_EKF);
+
+/* 静态分配缓冲区 */
+static uint8_t buffer[128];  /* 需 >= buf_size */
+filter_t *f = filter_create_static(FILTER_TYPE_EKF, buffer, sizeof(buffer));
+
+/* 使用方式与动态分配相同 */
+f->update(f, &in, &out);
+
+/* 静态分配不需要 destroy（内存由用户管理） */
+```
+
+### 8.7 安全保护
+
+滤波器内置多重安全保护：
+
+| 保护机制 | 函数 | 说明 |
+|----------|------|------|
+| 输出验证 | `filter_validate_output()` | 检查NaN/Inf + 角度范围 |
+| 四元数归一化 | `filter_normalize_quaternion()` | 防止数值发散 |
+| 协方差正则化 | `filter_regularize_covariance()` | 确保EKF/LKF数值稳定 |
+| ACC幅值检查 | `filter_check_acc_quality()` | 检测[0.5g, 2.0g]范围 |
+| GYRO幅值检查 | `filter_check_gyro_quality()` | 检测<=400dps |
+
+### 8.8 测试验证
+
+运行滤波器数学验证测试：
+
+```bash
+# 编译测试
+gcc -o test_filters.exe test/test_filters.c Core/Filter/Src/filter.c \
+    -ICore/Filter/Inc -lm -Wall -Wextra
+
+# 运行测试
+./test_filters.exe
+```
+
+当前测试覆盖：137个断言，12个测试套件，覆盖所有滤波器类型、退化模式、参数验证和边界条件。
