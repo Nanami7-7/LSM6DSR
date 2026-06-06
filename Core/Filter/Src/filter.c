@@ -1265,7 +1265,10 @@ filter_t* filter_create(filter_type_t type)
         default:
             return NULL;
     }
-    if (f) f->is_static = 0;
+    if (f) {
+        f->is_static = 0;
+        f->safety_config = (filter_safety_config_t)FILTER_SAFETY_DEFAULT;
+    }
     return f;
 }
 
@@ -1425,6 +1428,7 @@ filter_t* filter_create_static(filter_type_t type, void *buf, size_t buf_size) {
     f->priv = priv;
     f->is_static = 1;
     f->destroy = NULL; /* 静态分配不需要销毁 */
+    f->safety_config = (filter_safety_config_t)FILTER_SAFETY_DEFAULT;
     
     return f;
 }
@@ -1494,7 +1498,6 @@ void filter_regularize_covariance(float P[][7], int size, float factor) {
 }
 
 void filter_set_safety_config(filter_t *f, const filter_safety_config_t *config) {
-    /* 暂未实现：需要在priv中存储配置 */
-    (void)f;
-    (void)config;
+    if (!f || !config) return;
+    f->safety_config = *config;
 }

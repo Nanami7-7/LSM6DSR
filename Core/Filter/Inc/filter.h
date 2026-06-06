@@ -132,18 +132,6 @@ typedef void (*filter_set_param_fn)(filter_t *self, filter_param_t param, float 
  */
 typedef void (*filter_destroy_fn)(filter_t *self);
 
-/* ---- 滤波器接口结构体 ---- */
-struct filter {
-    filter_update_fn    update;     /**< 更新函数 */
-    filter_reset_fn     reset;      /**< 重置函数 */
-    filter_set_param_fn set_param;  /**< 参数设置函数 */
-    filter_destroy_fn   destroy;    /**< 销毁函数（释放私有数据） */
-    filter_type_t       type;       /**< 滤波器类型 */
-    filter_degrade_t    degrade;    /**< 退化模式（传感器数据异常时降级） */
-    void               *priv;       /**< 私有数据指针 */
-    uint8_t             is_static;  /**< 是否静态分配（1=静态，0=动态） */
-};
-
 /* ---- 数值安全保护配置 ---- */
 typedef struct {
     float angle_min;        /**< 角度最小值 (度) */
@@ -161,6 +149,20 @@ typedef struct {
     .cov_reg_factor = 1e-6f, \
     .norm_interval = 10 \
 }
+
+/* ---- 滤波器接口结构体 ---- */
+struct filter {
+    filter_update_fn    update;     /**< 更新函数 */
+    filter_reset_fn     reset;      /**< 重置函数 */
+    filter_set_param_fn set_param;  /**< 参数设置函数 */
+    filter_destroy_fn   destroy;    /**< 销毁函数（释放私有数据） */
+    filter_type_t       type;       /**< 滤波器类型 */
+    filter_degrade_t    degrade;    /**< 退化模式（传感器数据异常时降级） */
+    void               *priv;       /**< 私有数据指针 */
+    uint8_t             is_static;  /**< 是否静态分配（1=静态，0=动态） */
+    filter_safety_config_t safety_config; /**< 安全保护配置 */
+};
+
 
 /* ---- 工厂函数 ---- */
 
