@@ -16,7 +16,7 @@
 #define BSP_LSM6DSR_H
 
 #include <stdint.h>
-#include "filter.h"  /**< 滤波器统一接口 */
+#include "Filter/Inc/filter.h"  /**< 滤波器统一接口 */
 
 /** @defgroup BSP_Calib 校准参数 */
 /**@{*/
