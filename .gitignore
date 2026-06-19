@@ -41,3 +41,15 @@ test/__pycache__/
 test/*.pyc
 test/.pytest_cache/
 test/venv/
+
+# Tool caches
+.codegraph/
+.cursor/
+.omo/
+
+# Backup files
+*.backup
+
+# Patches and drafts
+patches/
+project_enhancements_vs_library.md
