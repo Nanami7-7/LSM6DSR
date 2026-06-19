@@ -10,13 +10,18 @@
  *       2. ACC 幅值校验 (|mag² - 1G| < tol)
  *       3. GYRO 幅值校验 (|gyro| > threshold → 运动)
  *   - Runtime 偏置跟踪：静止时 bg += rate × fg (X/Y vs Z 独立速率)
- *   - DWT 周期计数器计时 (~6ns 精度，替代 HAL_GetTick 的 1ms 抖动)
+ *   - 平台抽象计时：通过 platform_t 接口获取微秒级时间戳
  *   - VOFA+ 格式化：10 通道 FireWater 协议
+ *
+ * 平台依赖：
+ *   - g_platform->delay_ms()   — 毫秒延时
+ *   - g_platform->get_tick_us() — 微秒级时间戳
+ *   - g_platform->debug_printf() — 调试输出
  */
 #include "bsp_lsm6dsr.h"
 #include "lsm6dsr.h"
-#include "main.h"
-#include <stdio.h>
+#include "platform.h"
+#include "log.h"
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
@@ -28,47 +33,21 @@
 /** @brief 平台 I/O 实例 (定义于 test_lsm6dsr.c) */
 extern lsm6dsr_io_t lsm6dsr_io;
 
-/* ---- Runtime state (internal) ---- */
-static float   bgx, bgy, bgz;          /**< 陀螺偏置 (dps) */
-static int     cal_ok;                  /**< 校准成功标志 */
-static double  pitch, roll, yaw;        /**< 滤波器状态 (deg) */
-static uint32_t last_tick;              /**< 上一帧 DWT CYCCNT (~6ns 分辨率) */
-static int     initialized;             /**< init 完成守护标志 */
-
-/* ---- Adaptive filter state ---- */
-static float   ax_buf[BSP_ACC_VAR_WINDOW]; /**< ACC X 滑动窗口 */
-static float   ay_buf[BSP_ACC_VAR_WINDOW]; /**< ACC Y 滑动窗口 */
-static float   az_buf[BSP_ACC_VAR_WINDOW]; /**< ACC Z 滑动窗口 */
-static int     var_buf_idx;                /**< 窗口循环索引 */
-static int     var_samples;                /**< 已采帧数 */
-static float   alpha;                      /**< 当前互补滤波 α */
-static float   last_variance;              /**< 上一帧方差 (调试用) */
-
-/* ---- Filter instance ---- */
-static filter_t *active_filter = NULL;  /**< 当前活动滤波器实例 */
-static filter_type_t current_filter_type = FILTER_TYPE_COMPLEMENTARY;  /**< 当前滤波器类型 */
-
-/* ---- Production API cache ---- */
-static bsp_lsm6dsr_data_t last_data; /**< 最新数据缓存 */
-static int     is_stationary;         /**< 最新静止状态 */
-
+/* ---- 默认全局上下文（用于向后兼容） ---- */
+static bsp_lsm6dsr_ctx_t default_ctx;
 
 /**
- * @brief  计算 ACC 3 轴方差总和
+ * @brief  计算 ACC 3 轴方差总和（内部函数）
+ * @param[in,out] ctx  上下文结构体指针
  * @return 方差总和 (mg²)，窗口未填满时返回 0
- * @details 滑动窗口方差:
- *          1. 计算窗口内 X/Y/Z 均值
- *          2. 计算每轴方差
- *          3. 返回三轴方差之和
- *          方差小 (< BSP_ACC_VAR_THRESHOLD) → 静止
  */
-static float compute_acc_variance(void)
+static float compute_acc_variance(bsp_lsm6dsr_ctx_t *ctx)
 {
-    if (var_samples < BSP_ACC_VAR_WINDOW) return 0.0f;
+    if (ctx->var_samples < BSP_ACC_VAR_WINDOW) return 0.0f;
 
     float mx = 0, my = 0, mz = 0;
     for (int i = 0; i < BSP_ACC_VAR_WINDOW; i++) {
-        mx += ax_buf[i]; my += ay_buf[i]; mz += az_buf[i];
+        mx += ctx->ax_buf[i]; my += ctx->ay_buf[i]; mz += ctx->az_buf[i];
     }
     mx /= BSP_ACC_VAR_WINDOW;
     my /= BSP_ACC_VAR_WINDOW;
@@ -76,69 +55,69 @@ static float compute_acc_variance(void)
 
     float vx = 0, vy = 0, vz = 0;
     for (int i = 0; i < BSP_ACC_VAR_WINDOW; i++) {
-        float dx = ax_buf[i] - mx; vx += dx * dx;
-        float dy = ay_buf[i] - my; vy += dy * dy;
-        float dz = az_buf[i] - mz; vz += dz * dz;
+        float dx = ctx->ax_buf[i] - mx; vx += dx * dx;
+        float dy = ctx->ay_buf[i] - my; vy += dy * dy;
+        float dz = ctx->az_buf[i] - mz; vz += dz * dz;
     }
     vx /= BSP_ACC_VAR_WINDOW;
     vy /= BSP_ACC_VAR_WINDOW;
     vz /= BSP_ACC_VAR_WINDOW;
 
-    last_variance = vx + vy + vz;
-    return last_variance;
+    ctx->last_variance = vx + vy + vz;
+    return ctx->last_variance;
 }
 
 /**
- * @brief  初始化滤波器状态
- * @param  ax0  初始加速度 X (g)
- * @param  ay0  初始加速度 Y (g)
- * @param  az0  初始加速度 Z (g)
+ * @brief  初始化滤波器状态（内部函数）
+ * @param[out] ctx  上下文结构体指针
+ * @param[in]  ax0  初始加速度 X (g)
+ * @param[in]  ay0  初始加速度 Y (g)
+ * @param[in]  az0  初始加速度 Z (g)
  */
-static void init_filter_state(float ax0, float ay0, float az0)
+static void init_filter_state(bsp_lsm6dsr_ctx_t *ctx, float ax0, float ay0, float az0)
 {
-    pitch = atan2(-ax0, sqrt(ay0*ay0 + az0*az0)) * 180.0 / M_PI;
-    roll  = atan2( ay0, sqrt(ax0*ax0 + az0*az0)) * 180.0 / M_PI;
-    yaw   = 0.0;
+    ctx->pitch = atan2(-ax0, sqrt(ay0*ay0 + az0*az0)) * 180.0 / M_PI;
+    ctx->roll  = atan2( ay0, sqrt(ax0*ax0 + az0*az0)) * 180.0 / M_PI;
+    ctx->yaw   = 0.0;
 
-    var_buf_idx = 0;
-    var_samples = BSP_ACC_VAR_WINDOW;
+    ctx->var_buf_idx = 0;
+    ctx->var_samples = BSP_ACC_VAR_WINDOW;
     for (int i = 0; i < BSP_ACC_VAR_WINDOW; i++) {
-        ax_buf[i] = ax0; ay_buf[i] = ay0; az_buf[i] = az0;
+        ctx->ax_buf[i] = ax0; ctx->ay_buf[i] = ay0; ctx->az_buf[i] = az0;
     }
-    alpha = BSP_ALPHA_STATIONARY;
-    last_variance = 0.0f;
+    ctx->alpha = BSP_ALPHA_STATIONARY;
+    ctx->last_variance = 0.0f;
 }
 
 /* ------------------------------------------------------------------ */
 /**
- * @brief  传感器初始化
- * @details 完整初始化序列:
- *          1. SW_RESET → 等待 100ms
- *          2. WHO_AM_I 验证 (printf debug)
- *          3. I3C 禁用 → IF_INC 使能 → BDU 使能
- *          4. ACC 104Hz / ±4G
- *          5. GYRO 104Hz / ±250dps → 稳定等待
- *          6. 读取初始 ACC 计算初始 pitch/roll
- *          7. 填充方差窗口 (初始值)
- *          8. DWT 周期计数器使能 → 清零
- *          9. 调用 bsp_lsm6dsr_calibrate()
- *          10. 打印完成信息
+ * @brief  初始化 BSP 上下文
+ * @param[out] ctx  上下文结构体指针（调用者分配）
+ * @return 0=成功, -1=失败
  */
-void bsp_lsm6dsr_init(void)
+int bsp_lsm6dsr_init_ctx(bsp_lsm6dsr_ctx_t *ctx)
 {
+    if (!ctx) {
+        LOG_ERR("Context pointer is NULL");
+        return -1;
+    }
+
+    /* 清零所有状态 */
+    memset(ctx, 0, sizeof(bsp_lsm6dsr_ctx_t));
+
     /* Full reset + wait */
     lsm6dsr_reset(&lsm6dsr_io);
-    HAL_Delay(100);
+    g_platform->delay_ms(100);
 
     /* Debug: hardware info */
     {
         uint8_t whoami = 0;
         lsm6dsr_read_reg(&lsm6dsr_io, LSM6DSR_REG_WHO_AM_I, &whoami);
-        printf("  I2C: DevAddr=0x%04X  WHO_AM_I=0x%02X\r\n",
-               (unsigned)LSM6DSR_I2C_ADDR, (unsigned)whoami);
+        LOG_INDENT("I2C: DevAddr=0x%04X  WHO_AM_I=0x%02X",
+                   (unsigned)LSM6DSR_I2C_ADDR, (unsigned)whoami);
     }
 
-    /* Sensor configuration (same as original phase17) */
+    /* Sensor configuration */
     lsm6dsr_i3c_disable(&lsm6dsr_io);
     lsm6dsr_set_if_inc(&lsm6dsr_io, 1);
     lsm6dsr_set_bdu(&lsm6dsr_io, 1);
@@ -146,61 +125,73 @@ void bsp_lsm6dsr_init(void)
         LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
     lsm6dsr_gyro_config(&lsm6dsr_io,
         LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
-    HAL_Delay(BSP_CALIB_SETTLE_MS);
+    g_platform->delay_ms(BSP_CALIB_SETTLE_MS);
 
-    printf("  ACC ODR=104Hz FS=4G  GYRO ODR=104Hz FS=250dps\r\n");
+    LOG_INDENT("ACC ODR=104Hz FS=4G  GYRO ODR=104Hz FS=250dps");
 
-    /* ---- Initialise filter state ---- */
+    /* Initialize filter state */
     {
         float ax0, ay0, az0;
         lsm6dsr_read_accel_float(&lsm6dsr_io, &ax0, &ay0, &az0,
                                  LSM6DSR_ACCEL_FS_4G);
-        init_filter_state(ax0, ay0, az0);
+        init_filter_state(ctx, ax0, ay0, az0);
     }
 
-    /* ---- Create filter instance ---- */
-    active_filter = filter_create(current_filter_type);
-    if (!active_filter) {
-        printf("  ERROR: Failed to create filter\r\n");
-        while (1);  /* 阻塞报错 */
+    /* Create filter instance */
+    ctx->current_filter_type = FILTER_TYPE_COMPLEMENTARY;
+    ctx->active_filter = filter_create(ctx->current_filter_type);
+    if (!ctx->active_filter) {
+        LOG_ERR("Failed to create filter");
+        return -1;
     }
-    printf("  Filter: %s\r\n", filter_type_name(current_filter_type));
+    LOG_INDENT("Filter: %s", filter_type_name(ctx->current_filter_type));
 
+    LOG_INDENT("Initial pitch=%.2f  roll=%.2f",
+               ctx->pitch, ctx->roll);
 
-    printf("  Initial pitch=%.2f  roll=%.2f\r\n",
-           (double)pitch, (double)roll);
+    /* Initialize timing */
+    ctx->last_tick_us = g_platform->get_tick_us();
+    ctx->is_stationary = 1;
+    ctx->initialized = 1;
 
-    /* switch to DWT cycle counter for sub-us dt precision */
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-    last_tick = DWT->CYCCNT;
-    memset(&last_data, 0, sizeof(last_data));
-    is_stationary = 1;
-    initialized = 1;
+    /* Calibrate */
+    bsp_lsm6dsr_calibrate_ctx(ctx);
 
-    bsp_lsm6dsr_calibrate();
+    LOG_INDENT("BSP init done  (cal=%s, bias=%.4f,%.4f,%.4f)  alpha=%.2f",
+               ctx->cal_ok ? "OK" : "FAIL",
+               (double)ctx->bgx, (double)ctx->bgy, (double)ctx->bgz,
+               ctx->alpha);
 
-    printf("  BSP init done  (cal=%s, bias=%.4f,%.4f,%.4f)  alpha=%.2f\r\n",
-           cal_ok ? "OK" : "FAIL",
-           (double)bgx, (double)bgy, (double)bgz, alpha);
+    return 0;
 }
- 
+
 /* ------------------------------------------------------------------ */
 /**
- * @brief  陀螺零偏校准
- * @details 采集 BSP_CALIB_SAMPLES 帧陀螺数据，每帧用 ACC 双重检测：
- *          - 幅值检测: |mag² - 1G| < BSP_CALIB_ACC_MAG_TOL
- *          - 帧间差分: |ax - ax_prev| < BSP_CALIB_ACC_DELTA_MAX 等
- *          有效帧 ≥ 50% 时才采用均值偏置，否则偏置归零。
- *          校准完成后读取一帧打印残差。
- *
- * @note 可在运行时重复调用（机器狗站定时重新校准）。
+ * @brief  传感器初始化（向后兼容版本）
+ * @details 使用默认全局上下文，不支持多实例
  */
-void bsp_lsm6dsr_calibrate(void)
+void bsp_lsm6dsr_init(void)
 {
-    bgx = 0.0f; bgy = 0.0f; bgz = 0.0f;
-    cal_ok = 0;
+    if (bsp_lsm6dsr_init_ctx(&default_ctx) != 0) {
+        LOG_ERR("Failed to initialize default context");
+        while (1);  /* 阻塞报错 */
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/**
+ * @brief  陀螺零偏校准（上下文版本）
+ * @param[in,out] ctx  上下文结构体指针
+ * @return 0=成功, -1=失败
+ */
+int bsp_lsm6dsr_calibrate_ctx(bsp_lsm6dsr_ctx_t *ctx)
+{
+    if (!ctx || !ctx->initialized) {
+        return -1;
+    }
+
+    ctx->bgx = 0.0f; ctx->bgy = 0.0f; ctx->bgz = 0.0f;
+    ctx->cal_ok = 0;
     {
         int   n_valid = 0;
         float pax, pay, paz;
@@ -208,8 +199,8 @@ void bsp_lsm6dsr_calibrate(void)
         lsm6dsr_read_accel_float(&lsm6dsr_io, &pax, &pay, &paz,
                                  LSM6DSR_ACCEL_FS_4G);
 
-        printf("  Calibrating gyro bias (%d samples, keep still)...\r\n",
-               BSP_CALIB_SAMPLES);
+        LOG_INFO("Calibrating gyro bias (%d samples, keep still)...",
+                 BSP_CALIB_SAMPLES);
 
         for (int i = 0; i < BSP_CALIB_SAMPLES; i++)
         {
@@ -225,28 +216,28 @@ void bsp_lsm6dsr_calibrate(void)
                 && fabsf(tay - pay) < BSP_CALIB_ACC_DELTA_MAX
                 && fabsf(taz - paz) < BSP_CALIB_ACC_DELTA_MAX)
             {
-                bgx += tgx; bgy += tgy; bgz += tgz;
+                ctx->bgx += tgx; ctx->bgy += tgy; ctx->bgz += tgz;
                 n_valid++;
             }
             pax = tax; pay = tay; paz = taz;
-            HAL_Delay(BSP_CALIB_SAMPLE_DELAY_MS);
+            g_platform->delay_ms(BSP_CALIB_SAMPLE_DELAY_MS);
         }
 
         if (n_valid >= BSP_CALIB_SAMPLES / 2)
         {
-            bgx /= (float)n_valid;
-            bgy /= (float)n_valid;
-            bgz /= (float)n_valid;
-            cal_ok = 1;
-            printf("  Gyro bias: X=%.4f  Y=%.4f  Z=%.4f dps  (%d/%d OK)\r\n",
-                   (double)bgx, (double)bgy, (double)bgz,
-                   n_valid, BSP_CALIB_SAMPLES);
+            ctx->bgx /= (float)n_valid;
+            ctx->bgy /= (float)n_valid;
+            ctx->bgz /= (float)n_valid;
+            ctx->cal_ok = 1;
+            LOG_INFO("Gyro bias: X=%.4f  Y=%.4f  Z=%.4f dps  (%d/%d OK)",
+                     (double)ctx->bgx, (double)ctx->bgy, (double)ctx->bgz,
+                     n_valid, BSP_CALIB_SAMPLES);
         }
         else
         {
-            bgx = bgy = bgz = 0.0f;
-            printf("  Warning: too few stationary samples (%d/%d), bias=0\r\n",
-                   n_valid, BSP_CALIB_SAMPLES);
+            ctx->bgx = ctx->bgy = ctx->bgz = 0.0f;
+            LOG_WARN("Too few stationary samples (%d/%d), bias=0",
+                     n_valid, BSP_CALIB_SAMPLES);
         }
     }
 
@@ -255,48 +246,69 @@ void bsp_lsm6dsr_calibrate(void)
         float gx0, gy0, gz0;
         lsm6dsr_read_gyro_float(&lsm6dsr_io, &gx0, &gy0, &gz0,
                                 LSM6DSR_GYRO_FS_250DPS);
-        if (cal_ok) { gx0 -= bgx; gy0 -= bgy; gz0 -= bgz; }
-        printf("  GYRO residual after cal: X=%.4f  Y=%.4f  Z=%.4f dps\r\n",
-               (double)gx0, (double)gy0, (double)gz0);
+        if (ctx->cal_ok) { gx0 -= ctx->bgx; gy0 -= ctx->bgy; gz0 -= ctx->bgz; }
+        LOG_INDENT("GYRO residual after cal: X=%.4f  Y=%.4f  Z=%.4f dps",
+                   (double)gx0, (double)gy0, (double)gz0);
     }
+
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
 /**
- * @brief  姿态更新 (核心滤波)
- * @param  data 输出数据结构体指针 (不能为 NULL)
+ * @brief  陀螺零偏校准（向后兼容版本）
+ */
+void bsp_lsm6dsr_calibrate(void)
+{
+    bsp_lsm6dsr_calibrate_ctx(&default_ctx);
+}
+
+/* ------------------------------------------------------------------ */
+/**
+ * @brief  姿态更新（上下文版本）
+ * @param[in,out] ctx  上下文结构体指针
+ * @param[out]    data 输出数据结构体指针
+ * @return 0=成功, <0=错误码
  *
  * @details 每帧依次执行:
- *
- *  **1. 计时**: DWT->CYCCNT 差值 / SystemCoreClock → dt (秒)
- *     首帧或长时间暂停 (>0.5s) 时 dt 强制为 0.01s。
- *
- *  **2. 传感器读取**: ACC (g), GYRO (dps), TEMP (°C)
- *
- *  **3. 方差滑动窗口**: 更新 ACC 缓冲，满窗口时计算三轴方差总和。
- *
- *  **4. 三重静止检测**:
- *     - 方差 < BSP_ACC_VAR_THRESHOLD (抗振动)
- *     - |mag² - 1G| < BSP_CALIB_ACC_MAG_TOL (排除线加速度)
- *     - 偏置补偿后 |gyro| > BSP_GYRO_MOTION_THRESHOLD → 强制运动 (防偏置吃掉旋转)
- *
- *  **5. 偏置校正与跟踪**:
- *     - 校准有效时 fg -= bg
- *     - 静止时 bg += rate × fg (X/Y 用 0.05, Z 用 0.005)
- *
- *  **6. 滤波器更新**: 使用 filter_t 接口调用当前活动滤波器
- *
- *  **7. 结果填充**: data→ax/ay/az 为 m/s²; gx/gy/gz 为偏置补偿后 dps
+ *          1. 时间戳计算（使用 64 位防溢出）
+ *          2. 传感器读取
+ *          3. 方差滑动窗口更新
+ *          4. 三重静止检测
+ *          5. 偏置校正与跟踪
+ *          6. 滤波器更新
+ *          7. 结果填充
  */
-void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
+int bsp_lsm6dsr_update_ctx(bsp_lsm6dsr_ctx_t *ctx, bsp_lsm6dsr_data_t *data)
 {
-    if (!initialized) return;
+    if (!ctx || !ctx->initialized) {
+        return -1;
+    }
+    if (!data) {
+        return -2;
+    }
 
-    /* ---- timing (DWT cycle counter, ~6ns resolution) ---- */
-    uint32_t now = DWT->CYCCNT;
-    double dt = (now - last_tick) / (double)SystemCoreClock;
-    if (dt > 0.5) dt = 0.01;
-    last_tick = now;
+    /* ---- timing (platform tick, microsecond resolution) ---- */
+    uint64_t now = g_platform->get_tick_us();
+    double dt;
+
+    if (ctx->last_tick_us == 0) {
+        /* 首帧或重置后 */
+        dt = 0.01;  /* 默认 10ms */
+    } else {
+        dt = (double)(now - ctx->last_tick_us) * 1e-6;  /* us to seconds */
+
+        /* 检测时间戳回绕（理论上 64 位不会发生，但保险起见） */
+        if (now < ctx->last_tick_us) {
+            dt = 0.01;
+        }
+
+        /* 检测异常的时间间隔 */
+        if (dt > 0.5 || dt <= 0.0) {
+            dt = 0.01;
+        }
+    }
+    ctx->last_tick_us = now;
 
     /* ---- read sensors ---- */
     float fax, fay, faz, fgx, fgy, fgz;
@@ -307,14 +319,14 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
     lsm6dsr_read_temp(&lsm6dsr_io, &data->temperature);
 
     /* ---- update sliding window ---- */
-    ax_buf[var_buf_idx] = fax;
-    ay_buf[var_buf_idx] = fay;
-    az_buf[var_buf_idx] = faz;
-    var_buf_idx = (var_buf_idx + 1) % BSP_ACC_VAR_WINDOW;
-    if (var_samples < BSP_ACC_VAR_WINDOW) var_samples++;
+    ctx->ax_buf[ctx->var_buf_idx] = fax;
+    ctx->ay_buf[ctx->var_buf_idx] = fay;
+    ctx->az_buf[ctx->var_buf_idx] = faz;
+    ctx->var_buf_idx = (ctx->var_buf_idx + 1) % BSP_ACC_VAR_WINDOW;
+    if (ctx->var_samples < BSP_ACC_VAR_WINDOW) ctx->var_samples++;
 
     /* ---- variance-based stationary detection ---- */
-    float var_sum = compute_acc_variance();
+    float var_sum = compute_acc_variance(ctx);
     int stationary = (var_sum < BSP_ACC_VAR_THRESHOLD);
     /* dual-check: accel magnitude must be near 1G */
     float mag2 = fax*fax + fay*fay + faz*faz;
@@ -323,8 +335,8 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
     }
 
     /* ---- bias correction ---- */
-    if (cal_ok) {
-        fgx -= bgx; fgy -= bgy; fgz -= bgz;
+    if (ctx->cal_ok) {
+        fgx -= ctx->bgx; fgy -= ctx->bgy; fgz -= ctx->bgz;
 
         /* triple-check: gyro magnitude rejects bias-eating pure rotation */
         float gyro_mag2 = fgx*fgx + fgy*fgy + fgz*fgz;
@@ -334,35 +346,35 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
 
         /* ---- runtime bias tracking (only when stationary) ---- */
         if (stationary) {
-            bgx += BSP_BIAS_STATIONARY_RATE * fgx;
-            bgy += BSP_BIAS_STATIONARY_RATE * fgy;
-            bgz += BSP_BIAS_STATIONARY_RATE_Z * fgz;
+            ctx->bgx += BSP_BIAS_STATIONARY_RATE * fgx;
+            ctx->bgy += BSP_BIAS_STATIONARY_RATE * fgy;
+            ctx->bgz += BSP_BIAS_STATIONARY_RATE_Z * fgz;
         }
     }
 
     /* ---- update filter ---- */
-    if (active_filter) {
+    if (ctx->active_filter) {
         filter_input_t fin = {
             .ax = fax, .ay = fay, .az = faz,
             .gx = fgx, .gy = fgy, .gz = fgz,
             .dt = (float)dt
         };
         filter_output_t fout;
-        active_filter->update(active_filter, &fin, &fout);
+        ctx->active_filter->update(ctx->active_filter, &fin, &fout);
 
         data->pitch = fout.pitch;
         data->roll  = fout.roll;
         data->yaw   = fout.yaw;
     } else {
-        /* fallback: 互补滤波器 (should not happen) */
+        /* fallback: 互补滤波器 */
         double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
         double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
-        pitch = 0.98 * (pitch + fgy * dt) + 0.02 * acc_pitch;
-        roll  = 0.98 * (roll  - fgx * dt) + 0.02 * acc_roll;
-        yaw  += fgz * dt;
-        data->pitch = (float)pitch;
-        data->roll  = (float)roll;
-        data->yaw   = (float)yaw;
+        ctx->pitch = 0.98 * (ctx->pitch + fgy * dt) + 0.02 * acc_pitch;
+        ctx->roll  = 0.98 * (ctx->roll  - fgx * dt) + 0.02 * acc_roll;
+        ctx->yaw  += fgz * dt;
+        data->pitch = (float)ctx->pitch;
+        data->roll  = (float)ctx->roll;
+        data->yaw   = (float)ctx->yaw;
     }
 
     /* ---- fill result struct ---- */
@@ -374,51 +386,173 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
     data->gz    = fgz;
 
     /* ---- cache for production API ---- */
-    last_data = *data;
-    is_stationary = stationary;
+    ctx->last_data = *data;
+    ctx->is_stationary = stationary;
+    ctx->update_count++;
+
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
 /**
- * @brief  获取陀螺零偏
- * @param[out] bx X 轴偏置 (dps)，允许 NULL
- * @param[out] by Y 轴偏置 (dps)，允许 NULL
- * @param[out] bz Z 轴偏置 (dps)，允许 NULL
+ * @brief  姿态更新（向后兼容版本）
+ */
+void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
+{
+    bsp_lsm6dsr_update_ctx(&default_ctx, data);
+}
+
+/* ------------------------------------------------------------------ */
+/**
+ * @brief  获取陀螺零偏（上下文版本）
+ */
+void bsp_lsm6dsr_get_bias_ctx(const bsp_lsm6dsr_ctx_t *ctx, float *bx, float *by, float *bz)
+{
+    if (!ctx) return;
+    if (bx) *bx = ctx->bgx;
+    if (by) *by = ctx->bgy;
+    if (bz) *bz = ctx->bgz;
+}
+
+/**
+ * @brief  获取陀螺零偏（向后兼容版本）
  */
 void bsp_lsm6dsr_get_bias(float *bx, float *by, float *bz)
 {
-    if (bx) *bx = bgx;
-    if (by) *by = bgy;
-    if (bz) *bz = bgz;
+    bsp_lsm6dsr_get_bias_ctx(&default_ctx, bx, by, bz);
 }
 
 /**
- * @brief  获取上一帧 ACC 方差总和
- * @return 方差总和 (mg²)
+ * @brief  查询静止状态（上下文版本）
+ */
+int bsp_lsm6dsr_is_stationary_ctx(const bsp_lsm6dsr_ctx_t *ctx)
+{
+    if (!ctx) return 0;
+    return ctx->is_stationary;
+}
+
+/**
+ * @brief  查询静止状态（向后兼容版本）
+ */
+int bsp_lsm6dsr_is_stationary(void)
+{
+    return bsp_lsm6dsr_is_stationary_ctx(&default_ctx);
+}
+
+/**
+ * @brief  获取上一帧 ACC 方差总和（向后兼容版本）
  */
 float bsp_lsm6dsr_get_last_variance(void)
 {
-    return last_variance;
+    return default_ctx.last_variance;
+}
+
+/**
+ * @brief  获取最新缓存数据（向后兼容版本）
+ */
+const bsp_lsm6dsr_data_t* bsp_lsm6dsr_get_data(void)
+{
+    return &default_ctx.last_data;
 }
 
 /* ------------------------------------------------------------------ */
 /**
- * @brief  获取最新缓存数据 (只读)
- * @return 指向内部 last_data 的 const 指针
- * @note   返回的指针在下次 update 调用前有效
+ * @brief  销毁上下文，释放滤波器资源
  */
-const bsp_lsm6dsr_data_t* bsp_lsm6dsr_get_data(void)
+void bsp_lsm6dsr_destroy_ctx(bsp_lsm6dsr_ctx_t *ctx)
 {
-    return &last_data;
+    if (!ctx) return;
+
+    if (ctx->active_filter) {
+        filter_destroy_safe(ctx->active_filter);
+        ctx->active_filter = NULL;
+    }
+
+    ctx->initialized = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/**
+ * @brief  切换滤波器类型（上下文版本）
+ */
+int bsp_lsm6dsr_set_filter_ctx(bsp_lsm6dsr_ctx_t *ctx, filter_type_t type)
+{
+    if (!ctx || !ctx->initialized) {
+        return -1;
+    }
+
+    if (type < 0 || type >= FILTER_TYPE_COUNT) {
+        LOG_ERR("Invalid filter type %d", type);
+        return -1;
+    }
+
+    /* 销毁旧滤波器 */
+    if (ctx->active_filter) {
+        filter_destroy_safe(ctx->active_filter);
+        ctx->active_filter = NULL;
+    }
+
+    /* 创建新滤波器 */
+    ctx->active_filter = filter_create(type);
+    if (!ctx->active_filter) {
+        LOG_ERR("Failed to create filter type %d", type);
+        return -1;
+    }
+
+    ctx->current_filter_type = type;
+    LOG_INFO("Filter switched to: %s", filter_type_name(type));
+    return 0;
 }
 
 /**
- * @brief  查询静止状态
- * @return 1=静止 / 0=运动
+ * @brief  切换滤波器类型（向后兼容版本）
  */
-int bsp_lsm6dsr_is_stationary(void)
+int bsp_lsm6dsr_set_filter(filter_type_t type)
 {
-    return is_stationary;
+    return bsp_lsm6dsr_set_filter_ctx(&default_ctx, type);
+}
+
+/**
+ * @brief  获取当前滤波器类型（向后兼容版本）
+ */
+filter_type_t bsp_lsm6dsr_get_filter_type(void)
+{
+    return default_ctx.current_filter_type;
+}
+
+/**
+ * @brief  设置滤波器参数（上下文版本）
+ */
+int bsp_lsm6dsr_set_filter_param_ctx(bsp_lsm6dsr_ctx_t *ctx, filter_param_t param, float value)
+{
+    if (!ctx || !ctx->initialized || !ctx->active_filter) {
+        return -1;
+    }
+
+    if (param < 0 || param >= FILTER_PARAM_COUNT) {
+        LOG_ERR("Invalid filter param %d", param);
+        return -1;
+    }
+
+    ctx->active_filter->set_param(ctx->active_filter, param, value);
+    LOG_DBG("Filter param %d set to %.4f", param, (double)value);
+    return 0;
+}
+
+/**
+ * @brief  设置滤波器参数（向后兼容版本）
+ */
+int bsp_lsm6dsr_set_filter_param(filter_param_t param, float value)
+{
+    return bsp_lsm6dsr_set_filter_param_ctx(&default_ctx, param, value);
+}
+
+/**
+ * @brief  获取滤波器类型名称（向后兼容版本）
+ */
+const char* bsp_lsm6dsr_get_filter_name(void)
+{
+    return filter_type_name(default_ctx.current_filter_type);
 }
 
 /* ------------------------------------------------------------------ */
@@ -429,93 +563,21 @@ int bsp_lsm6dsr_is_stationary(void)
  * @param[in]  data     IMU 数据指针
  * @return 写入缓冲区的字符数
  *
- * @details 格式: "ax,ay,az,gx,gy,gz,pitch,roll,yaw,temp\\r\\n"
+ * @details 格式: "ax,ay,az,gx,gy,gz,pitch,roll,yaw,temp\r\n"
  *          - ax/ay/az: m/s² (%.3f)
  *          - gx/gy/gz: dps (%.3f)
  *          - pitch/roll/yaw: deg (%.2f)
  *          - temp: °C (%.1f)
- *
- *          VOFA+ 选择 FireWater 协议，10 通道自动对应。
  */
 int bsp_lsm6dsr_vofa_format(char *buf, int buf_size, const bsp_lsm6dsr_data_t *data)
 {
+    if (!buf || !data || buf_size <= 0) {
+        return 0;
+    }
+
     return snprintf(buf, buf_size,
         "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.1f\r\n",
         (double)data->ax, (double)data->ay, (double)data->az,
         (double)data->gx, (double)data->gy, (double)data->gz,
         data->pitch, data->roll, data->yaw, data->temperature);
-}
-
-/* ------------------------------------------------------------------ */
-/**
- * @brief  切换滤波器类型
- * @param  type  滤波器类型 (FILTER_TYPE_*)
- * @return 0=成功, -1=失败
- * @details 运行时切换滤波器，会销毁旧滤波器并创建新滤波器。
- *          新滤波器使用默认参数，可通过 bsp_lsm6dsr_set_filter_param() 调整。
- */
-int bsp_lsm6dsr_set_filter(filter_type_t type)
-{
-    if (type < 0 || type >= FILTER_TYPE_COUNT) {
-        printf("  ERROR: Invalid filter type %d\r\n", type);
-        return -1;
-    }
-
-    /* 销毁旧滤波器 */
-    if (active_filter) {
-        active_filter->destroy(active_filter);
-        active_filter = NULL;
-    }
-
-    /* 创建新滤波器 */
-    active_filter = filter_create(type);
-    if (!active_filter) {
-        printf("  ERROR: Failed to create filter type %d\r\n", type);
-        return -1;
-    }
-
-    current_filter_type = type;
-    printf("  Filter switched to: %s\r\n", filter_type_name(type));
-    return 0;
-}
-
-/**
- * @brief  获取当前滤波器类型
- * @return 当前滤波器类型
- */
-filter_type_t bsp_lsm6dsr_get_filter_type(void)
-{
-    return current_filter_type;
-}
-
-/**
- * @brief  设置滤波器参数
- * @param  param  参数枚举
- * @param  value  参数值
- * @return 0=成功, -1=失败
- */
-int bsp_lsm6dsr_set_filter_param(filter_param_t param, float value)
-{
-    if (!active_filter) {
-        printf("  ERROR: No active filter\r\n");
-        return -1;
-    }
-
-    if (param < 0 || param >= FILTER_PARAM_COUNT) {
-        printf("  ERROR: Invalid filter param %d\r\n", param);
-        return -1;
-    }
-
-    active_filter->set_param(active_filter, param, value);
-    printf("  Filter param %d set to %.4f\r\n", param, (double)value);
-    return 0;
-}
-
-/**
- * @brief  获取滤波器类型名称
- * @return 类型名称字符串
- */
-const char* bsp_lsm6dsr_get_filter_name(void)
-{
-    return filter_type_name(current_filter_type);
 }

@@ -89,8 +89,8 @@ UV_PATH = check_uv_installed()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # LSM6DSR/
 TEST_DIR = PROJECT_ROOT / "test"
 SCRIPTS_DIR = TEST_DIR / "scripts"
-CORE_INC = PROJECT_ROOT / "Core" / "Inc"
-CORE_SRC = PROJECT_ROOT / "Core" / "Src"
+CORE_FILTER_INC = PROJECT_ROOT / "Core" / "Filter" / "Inc"
+CORE_FILTER_SRC = PROJECT_ROOT / "Core" / "Filter" / "Src"
 
 # === 工具函数 ========================================================
 
@@ -122,20 +122,23 @@ def stage_build_c_tests() -> bool:
     """阶段1: 编译C测试程序"""
     print("\n[阶段1/5] 编译C测试程序")
 
+    filter_src = str(CORE_FILTER_SRC / "filter.c")
+    filter_config_src = str(CORE_FILTER_SRC / "filter_config.c")
+    inc_path = str(CORE_FILTER_INC)
+
     test_files = [
-        (["test_filters.c"], "test_filters.exe"),
-        (["test_convergence.c"], "test_convergence.exe"),
+        (["test_filters.c"], "test_filters.exe", [filter_src, filter_config_src]),
+        (["test_fixes.c"], "test_fixes.exe", [filter_src]),
+        (["test_convergence.c"], "test_convergence.exe", [filter_src]),
     ]
 
     all_ok = True
-    for src_files, exe_name in test_files:
+    for src_files, exe_name, extra_srcs in test_files:
         src_paths = [str(TEST_DIR / s) for s in src_files]
-        filter_src = str(CORE_SRC / "filter.c")
-        inc_path = str(CORE_INC)
         out_path = str(TEST_DIR / exe_name)
 
-        cmd = (["gcc", "-o", out_path] + src_paths +
-               [filter_src, f"-I{inc_path}", "-lm", "-Wall", "-Wextra"])
+        cmd = (["gcc", "-o", out_path] + src_paths + extra_srcs +
+               [f"-I{inc_path}", "-lm", "-Wall", "-Wextra"])
 
         rc, stdout, stderr = run_captured(cmd)
         if rc != 0:
@@ -160,8 +163,18 @@ def stage_run_c_tests() -> bool:
         rc, stdout, stderr = run_captured([str(test_exe)])
         print(stdout)
         if rc != 0:
-            print(f"  [WARN] test_filters 返回码={rc} (预期: 收敛速度问题)")
-            # 解析通过率
+            print(f"  [WARN] test_filters 返回码={rc}")
+            for line in stdout.split('\n'):
+                if '通过率' in line or '总测试数' in line:
+                    print(f"  {line.strip()}")
+
+    # 运行修复验证测试
+    fixes_exe = TEST_DIR / "test_fixes.exe"
+    if fixes_exe.exists():
+        rc, stdout, stderr = run_captured([str(fixes_exe)])
+        print(stdout)
+        if rc != 0:
+            print(f"  [WARN] test_fixes 返回码={rc}")
             for line in stdout.split('\n'):
                 if '通过率' in line or '总测试数' in line:
                     print(f"  {line.strip()}")
@@ -192,7 +205,7 @@ def stage_verify_degrade() -> bool:
 
     # 通过设置环境变量或参数来测试退化模式
     # 这里直接检查 filter.h 中的退化API是否完整
-    filter_h_path = CORE_INC / "filter.h"
+    filter_h_path = CORE_FILTER_INC / "filter.h"
     if filter_h_path.exists():
         content = filter_h_path.read_text()
 
@@ -225,8 +238,8 @@ def stage_verify_config() -> bool:
     print("\n[阶段4/5] 验证参数配置系统")
 
     all_ok = True
-    config_h_path = CORE_INC / "filter_config.h"
-    config_c_path = CORE_SRC / "filter_config.c"
+    config_h_path = CORE_FILTER_INC / "filter_config.h"
+    config_c_path = CORE_FILTER_SRC / "filter_config.c"
 
     for path, name in [(config_h_path, "filter_config.h"),
                         (config_c_path, "filter_config.c")]:
@@ -257,11 +270,12 @@ def stage_summary() -> bool:
 
     # 统计文件行数
     files_to_check = [
-        ("Core/Inc/filter.h", CORE_INC / "filter.h"),
-        ("Core/Src/filter.c", CORE_SRC / "filter.c"),
-        ("Core/Inc/filter_config.h", CORE_INC / "filter_config.h"),
-        ("Core/Src/filter_config.c", CORE_SRC / "filter_config.c"),
+        ("Core/Filter/Inc/filter.h", CORE_FILTER_INC / "filter.h"),
+        ("Core/Filter/Src/filter.c", CORE_FILTER_SRC / "filter.c"),
+        ("Core/Filter/Inc/filter_config.h", CORE_FILTER_INC / "filter_config.h"),
+        ("Core/Filter/Src/filter_config.c", CORE_FILTER_SRC / "filter_config.c"),
         ("test/test_filters.c", TEST_DIR / "test_filters.c"),
+        ("test/test_fixes.c", TEST_DIR / "test_fixes.c"),
         ("test/test_convergence.c", TEST_DIR / "test_convergence.c"),
     ]
 
@@ -273,7 +287,7 @@ def stage_summary() -> bool:
             print(f"  {name}: {lines} 行")
 
     print(f"\n  总代码行数: {total_lines}")
-    print(f"  滤波器数量: 5 (互补/LPF/EKF/Mahony/Madgwick)")
+    print(f"  滤波器数量: 6 (互补/LPF/EKF/LKF/Mahony/Madgwick)")
     print(f"  退化模式数量: 5 (None/GyroOnly/AccOnly/StaticOnly/HoldLast)")
 
     return True

@@ -48,10 +48,60 @@
 #define FILTER_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** @defgroup Filter_Error 错误处理 */
+/**@{*/
+
+/**
+ * @brief 滤波器错误码
+ */
+typedef enum {
+    FILTER_OK = 0,                    /**< 成功 */
+    FILTER_ERR_INVALID_TYPE,          /**< 无效的滤波器类型 */
+    FILTER_ERR_ALLOC_FAILED,          /**< 内存分配失败 */
+    FILTER_ERR_INVALID_PARAM,         /**< 无效的参数 */
+    FILTER_ERR_NOT_INITIALIZED,       /**< 未初始化 */
+    FILTER_ERR_INVALID_INPUT,         /**< 无效的输入数据（NaN/Inf） */
+    FILTER_ERR_NUMERICAL,             /**< 数值错误（如除零） */
+    FILTER_ERR_QUATERNION,            /**< 四元数异常 */
+} filter_error_t;
+
+/**
+ * @brief 错误信息结构体
+ */
+typedef struct {
+    filter_error_t code;              /**< 错误码 */
+    const char *message;              /**< 错误消息 */
+    const char *file;                 /**< 源文件名 */
+    int line;                         /**< 行号 */
+} filter_error_info_t;
+
+/**
+ * @brief 错误回调函数类型
+ * @param info  错误信息
+ * @param user_data 用户数据
+ */
+typedef void (*filter_error_callback_t)(const filter_error_info_t *info, void *user_data);
+
+/**
+ * @brief 设置全局错误回调
+ * @param callback  回调函数（NULL 取消）
+ * @param user_data 用户数据
+ */
+void filter_set_error_callback(filter_error_callback_t callback, void *user_data);
+
+/**
+ * @brief 获取最后的错误信息
+ * @return 错误信息结构体
+ */
+filter_error_info_t filter_get_last_error(void);
+
+/**@}*/
 
 /* ---- 滤波器类型枚举 ---- */
 typedef enum {
@@ -251,6 +301,17 @@ const char* filter_type_name(filter_type_t type);
  * - FILTER_DEGRADE_HOLD_LAST: 冻结输出
  */
 void filter_set_degrade(filter_t *f, filter_degrade_t degrade);
+
+/**
+ * @brief 安全销毁滤波器
+ * @param f  滤波器实例指针（可为 NULL）
+ *
+ * 推荐使用此函数替代直接调用 f->destroy(f)：
+ * - 自动处理 NULL 指针（安全）
+ * - 自动检测静态分配（只重置状态，不释放内存）
+ * - 自动检测 NULL destroy 函数指针
+ */
+void filter_destroy_safe(filter_t *f);
 
 /**
  * @brief 获取退化模式名称

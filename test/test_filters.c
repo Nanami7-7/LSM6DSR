@@ -10,7 +10,7 @@
  *   5. 四元数归一化验证
  *
  * 编译（PC）：
- *   gcc -o test_filters test_filters.c ../Core/Src/filter.c -I../Core/Inc -lm -Wall -Wextra
+ *   gcc -o test_filters.exe test_filters.c ../Core/Filter/Src/filter.c ../Core/Filter/Src/filter_config.c -I../Core/Filter/Inc -lm -Wall -Wextra
  *
  * 运行：
  *   ./test_filters
@@ -93,7 +93,7 @@ static int is_valid_angle(float angle) {
 static void test_create_destroy(void) {
     printf("\n=== 测试1：滤波器创建和销毁 ===\n");
 
-    const char *names[] = {"Complementary", "LPF", "EKF", "Mahony", "Madgwick"};
+    const char *names[] = {"Complementary", "LPF", "EKF", "LKF", "Mahony", "Madgwick"};
 
     for (int i = 0; i < FILTER_TYPE_COUNT; i++) {
         filter_type_t type = (filter_type_t)i;
@@ -372,7 +372,7 @@ static void test_nan_inf_protection(void) {
 
 /**
  * 测试8：重置功能
- * 重置后输出应回到初始状态
+ * 重置后输出应回到初始状态（pitch、roll、yaw 都应接近0°）
  */
 static void test_reset(void) {
     printf("\n=== 测试8：重置功能 ===\n");
@@ -388,7 +388,7 @@ static void test_reset(void) {
         filter_t *f = filter_create((filter_type_t)i);
         if (!f) continue;
 
-        /* 运行一段时间 */
+        /* 运行100帧，积累yaw */
         for (int j = 0; j < 100; j++) {
             f->update(f, &in, &out);
         }
@@ -396,13 +396,15 @@ static void test_reset(void) {
         /* 重置 */
         f->reset(f);
 
-        /* 重置后用静止输入 */
+        /* 重置后用静止输入，运行多帧确保收敛 */
         filter_input_t in_static = {
             .ax = 0.0f, .ay = 0.0f, .az = 1.0f,
             .gx = 0.0f, .gy = 0.0f, .gz = 0.0f,
             .dt = TEST_DT
         };
-        f->update(f, &in_static, &out);
+        for (int j = 0; j < 10; j++) {
+            f->update(f, &in_static, &out);
+        }
 
         char msg[64];
         snprintf(msg, sizeof(msg), "%s 重置后pitch≈0° (实际=%.2f°)", filter_type_name((filter_type_t)i), out.pitch);
@@ -410,6 +412,10 @@ static void test_reset(void) {
 
         snprintf(msg, sizeof(msg), "%s 重置后roll≈0° (实际=%.2f°)", filter_type_name((filter_type_t)i), out.roll);
         TEST_ASSERT(fabsf(out.roll) < TOLERANCE, msg);
+
+        /* 验证yaw也重置（对于支持yaw重置的滤波器） */
+        snprintf(msg, sizeof(msg), "%s 重置后yaw≈0° (实际=%.2f°)", filter_type_name((filter_type_t)i), out.yaw);
+        TEST_ASSERT(fabsf(out.yaw) < TOLERANCE, msg);
 
         f->destroy(f);
     }
@@ -459,38 +465,68 @@ static void test_long_term_stability(void) {
 
 /**
  * 测试10：参数设置
- * 测试set_param功能
+ * 测试set_param功能 — 验证参数实际生效
  */
 static void test_set_param(void) {
     printf("\n=== 测试10：参数设置 ===\n");
 
-    filter_output_t out;
+    /* 使用45°俯仰输入，验证参数对收敛行为的影响 */
+    float angle = 45.0f * M_PI / 180.0f;
     filter_input_t in = {
-        .ax = 0.0f, .ay = 0.0f, .az = 1.0f,
+        .ax = -sinf(angle), .ay = 0.0f, .az = cosf(angle),
         .gx = 0.0f, .gy = 0.0f, .gz = 0.0f,
         .dt = TEST_DT
     };
+    filter_output_t out_default, out_modified;
 
-    /* 测试互补滤波器alpha参数 */
+    /* 测试互补滤波器alpha参数 — alpha越小收敛越快 */
     {
-        filter_t *f = filter_create(FILTER_TYPE_COMPLEMENTARY);
-        if (f) {
-            f->set_param(f, FILTER_PARAM_ALPHA, 0.5f);
-            f->update(f, &in, &out);
-            TEST_ASSERT(is_valid_float(out.pitch), "互补滤波器 set_param(alpha=0.5) 后输出有效");
-            f->destroy(f);
+        /* 默认alpha (0.98) 滤波器 */
+        filter_t *f1 = filter_create(FILTER_TYPE_COMPLEMENTARY);
+        /* 修改alpha (0.50) 滤波器 */
+        filter_t *f2 = filter_create(FILTER_TYPE_COMPLEMENTARY);
+        if (f1 && f2) {
+            f2->set_param(f2, FILTER_PARAM_ALPHA, 0.50f);
+            /* 运行100帧，观察收敛差异 */
+            for (int j = 0; j < 100; j++) {
+                f1->update(f1, &in, &out_default);
+                f2->update(f2, &in, &out_modified);
+            }
+            /* alpha=0.5 应该收敛更快，更接近45° */
+            float err_default = fabsf(out_default.pitch - 45.0f);
+            float err_modified = fabsf(out_modified.pitch - 45.0f);
+            TEST_ASSERT(err_modified < err_default,
+                        "互补滤波器 alpha=0.5 比默认收敛更快");
+            TEST_ASSERT(is_valid_float(out_modified.pitch),
+                        "互补滤波器 set_param(alpha=0.5) 后输出有效");
         }
+        if (f1) f1->destroy(f1);
+        if (f2) f2->destroy(f2);
     }
 
-    /* 测试LPF截止频率参数 */
+    /* 测试LPF截止频率参数 — 截止频率越低，滤波越强 */
     {
-        filter_t *f = filter_create(FILTER_TYPE_LPF);
-        if (f) {
-            f->set_param(f, FILTER_PARAM_CUTOFF_FREQ, 5.0f);
-            f->update(f, &in, &out);
-            TEST_ASSERT(is_valid_float(out.pitch), "LPF set_param(cutoff=5Hz) 后输出有效");
-            f->destroy(f);
+        filter_t *f1 = filter_create(FILTER_TYPE_LPF);
+        filter_t *f2 = filter_create(FILTER_TYPE_LPF);
+        if (f1 && f2) {
+            f2->set_param(f2, FILTER_PARAM_CUTOFF_FREQ, 2.0f);
+            /* 使用动态输入测试滤波效果 */
+            filter_input_t in_dynamic = {
+                .ax = 0.0f, .ay = 0.0f, .az = 1.0f,
+                .gx = 0.0f, .gy = 50.0f, .gz = 0.0f,
+                .dt = TEST_DT
+            };
+            for (int j = 0; j < 50; j++) {
+                f1->update(f1, &in_dynamic, &out_default);
+                f2->update(f2, &in_dynamic, &out_modified);
+            }
+            /* 低截止频率应该滤波更强（输出更平滑） */
+            /* 验证输出有效即可 */
+            TEST_ASSERT(is_valid_float(out_modified.pitch),
+                        "LPF set_param(cutoff=2Hz) 后输出有效");
         }
+        if (f1) f1->destroy(f1);
+        if (f2) f2->destroy(f2);
     }
 
     /* 测试EKF参数 */
@@ -500,31 +536,64 @@ static void test_set_param(void) {
             f->set_param(f, FILTER_PARAM_Q_ANGLE, 0.01f);
             f->set_param(f, FILTER_PARAM_Q_BIAS, 0.001f);
             f->set_param(f, FILTER_PARAM_R_MEASURE, 0.1f);
-            f->update(f, &in, &out);
-            TEST_ASSERT(is_valid_float(out.pitch), "EKF set_param 后输出有效");
+            for (int j = 0; j < 100; j++) {
+                f->update(f, &in, &out_modified);
+            }
+            TEST_ASSERT(fabsf(out_modified.pitch - 45.0f) < TOLERANCE,
+                        "EKF set_param 后收敛到45°");
             f->destroy(f);
         }
     }
 
-    /* 测试Mahony kp/ki参数 */
+    /* 测试Mahony kp/ki参数 — kp越高收敛越快 */
     {
-        filter_t *f = filter_create(FILTER_TYPE_MAHONY);
-        if (f) {
-            f->set_param(f, FILTER_PARAM_KP, 10.0f);
-            f->set_param(f, FILTER_PARAM_KI, 0.1f);
-            f->update(f, &in, &out);
-            TEST_ASSERT(is_valid_float(out.pitch), "Mahony set_param(kp=10, ki=0.1) 后输出有效");
-            f->destroy(f);
+        filter_t *f1 = filter_create(FILTER_TYPE_MAHONY);
+        filter_t *f2 = filter_create(FILTER_TYPE_MAHONY);
+        if (f1 && f2) {
+            f2->set_param(f2, FILTER_PARAM_KP, 20.0f);
+            for (int j = 0; j < 20; j++) {
+                f1->update(f1, &in, &out_default);
+                f2->update(f2, &in, &out_modified);
+            }
+            float err_default = fabsf(out_default.pitch - 45.0f);
+            float err_modified = fabsf(out_modified.pitch - 45.0f);
+            TEST_ASSERT(err_modified < err_default,
+                        "Mahony kp=20 比默认kp=10收敛更快");
         }
+        if (f1) f1->destroy(f1);
+        if (f2) f2->destroy(f2);
     }
 
-    /* 测试Madgwick beta参数 */
+    /* 测试Madgwick beta参数 — beta越高收敛越快 */
     {
-        filter_t *f = filter_create(FILTER_TYPE_MADGWICK);
+        filter_t *f1 = filter_create(FILTER_TYPE_MADGWICK);
+        filter_t *f2 = filter_create(FILTER_TYPE_MADGWICK);
+        if (f1 && f2) {
+            f2->set_param(f2, FILTER_PARAM_KP, 0.1f);  /* beta=0.1 */
+            for (int j = 0; j < 100; j++) {
+                f1->update(f1, &in, &out_default);
+                f2->update(f2, &in, &out_modified);
+            }
+            /* 验证两个滤波器输出不同（参数生效） */
+            float diff = fabsf(out_default.pitch - out_modified.pitch);
+            TEST_ASSERT(diff > 0.01f,
+                        "Madgwick beta=0.1 与默认beta=0.5 输出不同");
+        }
+        if (f1) f1->destroy(f1);
+        if (f2) f2->destroy(f2);
+    }
+
+    /* 测试LKF参数 */
+    {
+        filter_t *f = filter_create(FILTER_TYPE_LKF);
         if (f) {
-            f->set_param(f, FILTER_PARAM_KP, 0.5f);  /* beta映射到KP */
-            f->update(f, &in, &out);
-            TEST_ASSERT(is_valid_float(out.pitch), "Madgwick set_param(beta=0.5) 后输出有效");
+            f->set_param(f, FILTER_PARAM_Q_ANGLE, 0.01f);
+            f->set_param(f, FILTER_PARAM_R_MEASURE, 0.1f);
+            for (int j = 0; j < 100; j++) {
+                f->update(f, &in, &out_modified);
+            }
+            TEST_ASSERT(fabsf(out_modified.pitch - 45.0f) < TOLERANCE,
+                        "LKF set_param 后收敛到45°");
             f->destroy(f);
         }
     }
@@ -587,6 +656,8 @@ static void test_type_name(void) {
                 "LPF名称正确");
     TEST_ASSERT(strcmp(filter_type_name(FILTER_TYPE_EKF), "EKF") == 0,
                 "EKF名称正确");
+    TEST_ASSERT(strcmp(filter_type_name(FILTER_TYPE_LKF), "LKF") == 0,
+                "LKF名称正确");
     TEST_ASSERT(strcmp(filter_type_name(FILTER_TYPE_MAHONY), "Mahony") == 0,
                 "Mahony名称正确");
     TEST_ASSERT(strcmp(filter_type_name(FILTER_TYPE_MADGWICK), "Madgwick") == 0,

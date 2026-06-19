@@ -20,14 +20,183 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdio.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 /* ============================================================
+ * 错误处理机制
+ * ============================================================ */
+
+/* 全局错误回调 */
+static filter_error_callback_t g_error_callback = NULL;
+static void *g_error_user_data = NULL;
+
+/* 最后的错误信息 */
+static filter_error_info_t g_last_error = {0};
+
+/**
+ * @brief 设置全局错误回调
+ */
+void filter_set_error_callback(filter_error_callback_t callback, void *user_data)
+{
+    g_error_callback = callback;
+    g_error_user_data = user_data;
+}
+
+/**
+ * @brief 获取最后的错误信息
+ */
+filter_error_info_t filter_get_last_error(void)
+{
+    return g_last_error;
+}
+
+/**
+ * @brief 报告错误（内部函数）
+ */
+static void report_error(filter_error_t code, const char *message,
+                          const char *file, int line)
+{
+    filter_error_info_t info = {
+        .code = code,
+        .message = message,
+        .file = file,
+        .line = line
+    };
+
+    g_last_error = info;
+
+    if (g_error_callback) {
+        g_error_callback(&info, g_error_user_data);
+    }
+
+    #ifdef DEBUG
+    fprintf(stderr, "[FILTER ERROR] %s:%d: %s (code=%d)\n",
+            file, line, message, code);
+    #endif
+}
+
+/* 错误报告宏 */
+#define FILTER_REPORT_ERROR(code, msg) \
+    report_error(code, msg, __FILE__, __LINE__)
+
+/* ============================================================
+ * 数值安全函数（前向声明）
+ * ============================================================ */
+
+/**
+ * @brief 内部四元数归一化函数（统一实现）
+ *
+ * 处理所有边界情况：
+ * - NaN/Inf 输入：重置为单位四元数
+ * - 接近零的范数：重置为单位四元数
+ * - 正常情况：归一化
+ *
+ * @param q0, q1, q2, q3  四元数（输入/输出）
+ * @return 0=成功, -1=异常（已重置为单位四元数）
+ */
+static int normalize_quaternion_internal(float *q0, float *q1, float *q2, float *q3)
+{
+    /* 检查 NaN */
+    if (isnan(*q0) || isnan(*q1) || isnan(*q2) || isnan(*q3)) {
+        *q0 = 1.0f; *q1 = 0.0f; *q2 = 0.0f; *q3 = 0.0f;
+        return -1;
+    }
+
+    /* 检查 Inf */
+    if (isinf(*q0) || isinf(*q1) || isinf(*q2) || isinf(*q3)) {
+        *q0 = 1.0f; *q1 = 0.0f; *q2 = 0.0f; *q3 = 0.0f;
+        return -1;
+    }
+
+    /* 计算范数 */
+    float norm = sqrtf((*q0)*(*q0) + (*q1)*(*q1) + (*q2)*(*q2) + (*q3)*(*q3));
+
+    /* 统一阈值检查（1e-10f） */
+    if (norm < 1e-10f) {
+        /* 范数太小，重置为单位四元数 */
+        *q0 = 1.0f; *q1 = 0.0f; *q2 = 0.0f; *q3 = 0.0f;
+        return -1;
+    }
+
+    /* 正常归一化 */
+    float inv_norm = 1.0f / norm;
+    *q0 *= inv_norm;
+    *q1 *= inv_norm;
+    *q2 *= inv_norm;
+    *q3 *= inv_norm;
+
+    return 0;
+}
+
+/* ============================================================
  * 1. 互补滤波器 (Complementary Filter)
  * ============================================================ */
+
+/**
+ * @brief 验证滤波器参数
+ * @param param  参数类型
+ * @param value  参数值
+ * @return 0=有效, -1=无效
+ */
+static int validate_filter_param(filter_param_t param, float value)
+{
+    /* 检查 NaN/Inf */
+    if (isnan(value) || isinf(value)) {
+        FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM, "Parameter is NaN or Inf");
+        return -1;
+    }
+
+    switch (param) {
+        case FILTER_PARAM_ALPHA:
+            /* α 应该在 0-1 之间 */
+            if (value < 0.0f || value > 1.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "Alpha must be in [0.0, 1.0]");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_CUTOFF_FREQ:
+            /* 截止频率必须为正 */
+            if (value <= 0.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "Cutoff frequency must be positive");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_Q_ANGLE:
+        case FILTER_PARAM_Q_BIAS:
+        case FILTER_PARAM_R_MEASURE:
+            /* 噪声参数必须为正 */
+            if (value <= 0.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "Noise parameter must be positive");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_KP:
+        case FILTER_PARAM_KI:
+            /* 增益参数必须非负 */
+            if (value < 0.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "Gain parameter must be non-negative");
+                return -1;
+            }
+            break;
+
+        default:
+            FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM, "Unknown parameter");
+            return -1;
+    }
+
+    return 0;
+}
 
 typedef struct {
     float alpha;        /**< 融合系数 */
@@ -97,6 +266,10 @@ static void complementary_reset(filter_t *self)
 
 static void complementary_set_param(filter_t *self, filter_param_t param, float value)
 {
+    if (validate_filter_param(param, value) != 0) {
+        return;  /* 参数无效，拒绝设置 */
+    }
+
     complementary_priv_t *p = (complementary_priv_t *)self->priv;
     if (param == FILTER_PARAM_ALPHA) {
         p->alpha = value;
@@ -210,6 +383,7 @@ static void lpf_reset(filter_t *self)
 static void lpf_set_param(filter_t *self, filter_param_t param, float value)
 {
     lpf_priv_t *p = (lpf_priv_t *)self->priv;
+    if (validate_filter_param(param, value) != 0) return;
     if (param == FILTER_PARAM_CUTOFF_FREQ) {
         p->cutoff_freq = value;
     }
@@ -621,6 +795,10 @@ static void ekf_reset(filter_t *self)
 
 static void ekf_set_param(filter_t *self, filter_param_t param, float value)
 {
+    if (validate_filter_param(param, value) != 0) {
+        return;  /* 参数无效，拒绝设置 */
+    }
+
     ekf_priv_t *p = (ekf_priv_t *)self->priv;
     switch (param) {
         case FILTER_PARAM_Q_ANGLE:  p->Q_angle  = value; break;
@@ -715,10 +893,7 @@ static void mahony_update(filter_t *self, const filter_input_t *in, filter_outpu
         p->q1 += 0.5f * ( q0 * gx + q2 * gz - q3 * gy) * dt;
         p->q2 += 0.5f * ( q0 * gy - q1 * gz + q3 * gx) * dt;
         p->q3 += 0.5f * ( q0 * gz + q1 * gy - q2 * gx) * dt;
-        float norm = sqrtf(p->q0*p->q0 + p->q1*p->q1 + p->q2*p->q2 + p->q3*p->q3);
-        if (norm > 0.0f) {
-            p->q0 /= norm; p->q1 /= norm; p->q2 /= norm; p->q3 /= norm;
-        }
+        normalize_quaternion_internal(&p->q0, &p->q1, &p->q2, &p->q3);
         out->q0 = p->q0; out->q1 = p->q1; out->q2 = p->q2; out->q3 = p->q3;
         out->pitch = asinf(fmaxf(-1.0f, fminf(1.0f, -2.0f * (p->q1*p->q3 - p->q0*p->q2)))) * 180.0f / M_PI;
         out->roll  = atan2f(2.0f * (p->q0*p->q1 + p->q2*p->q3), 1.0f - 2.0f * (p->q1*p->q1 + p->q2*p->q2)) * 180.0f / M_PI;
@@ -797,10 +972,7 @@ static void mahony_update(filter_t *self, const filter_input_t *in, filter_outpu
     p->q3 += 0.5f * ( q0 * gz + q1 * gy - q2 * gx) * dt;
 
     /* 归一化 */
-    norm = sqrtf(p->q0 * p->q0 + p->q1 * p->q1 + p->q2 * p->q2 + p->q3 * p->q3);
-    if (norm > 0.0f) {
-        p->q0 /= norm; p->q1 /= norm; p->q2 /= norm; p->q3 /= norm;
-    }
+    normalize_quaternion_internal(&p->q0, &p->q1, &p->q2, &p->q3);
 
     /* 输出 */
     out->q0 = p->q0; out->q1 = p->q1; out->q2 = p->q2; out->q3 = p->q3;
@@ -820,6 +992,10 @@ static void mahony_reset(filter_t *self)
 
 static void mahony_set_param(filter_t *self, filter_param_t param, float value)
 {
+    if (validate_filter_param(param, value) != 0) {
+        return;  /* 参数无效，拒绝设置 */
+    }
+
     mahony_priv_t *p = (mahony_priv_t *)self->priv;
     if (param == FILTER_PARAM_KP) p->kp = value;
     if (param == FILTER_PARAM_KI) p->ki = value;
@@ -899,10 +1075,7 @@ static void madgwick_update(filter_t *self, const filter_input_t *in, filter_out
         p->q1 += 0.5f * ( q0 * gx + q2 * gz - q3 * gy) * dt;
         p->q2 += 0.5f * ( q0 * gy - q1 * gz + q3 * gx) * dt;
         p->q3 += 0.5f * ( q0 * gz + q1 * gy - q2 * gx) * dt;
-        float norm = sqrtf(p->q0*p->q0 + p->q1*p->q1 + p->q2*p->q2 + p->q3*p->q3);
-        if (norm > 0.0f) {
-            p->q0 /= norm; p->q1 /= norm; p->q2 /= norm; p->q3 /= norm;
-        }
+        normalize_quaternion_internal(&p->q0, &p->q1, &p->q2, &p->q3);
         out->q0 = p->q0; out->q1 = p->q1; out->q2 = p->q2; out->q3 = p->q3;
         out->pitch = asinf(fmaxf(-1.0f, fminf(1.0f, -2.0f * (p->q1*p->q3 - p->q0*p->q2)))) * 180.0f / M_PI;
         out->roll  = atan2f(2.0f * (p->q0*p->q1 + p->q2*p->q3), 1.0f - 2.0f * (p->q1*p->q1 + p->q2*p->q2)) * 180.0f / M_PI;
@@ -975,10 +1148,7 @@ static void madgwick_update(filter_t *self, const filter_input_t *in, filter_out
     p->q3 += qDot3 * dt;
 
     /* 归一化 */
-    norm = sqrtf(p->q0 * p->q0 + p->q1 * p->q1 + p->q2 * p->q2 + p->q3 * p->q3);
-    if (norm > 0.0f) {
-        p->q0 /= norm; p->q1 /= norm; p->q2 /= norm; p->q3 /= norm;
-    }
+    normalize_quaternion_internal(&p->q0, &p->q1, &p->q2, &p->q3);
 
     /* 输出 */
     out->q0 = p->q0; out->q1 = p->q1; out->q2 = p->q2; out->q3 = p->q3;
@@ -997,6 +1167,10 @@ static void madgwick_reset(filter_t *self)
 
 static void madgwick_set_param(filter_t *self, filter_param_t param, float value)
 {
+    if (validate_filter_param(param, value) != 0) {
+        return;  /* 参数无效，拒绝设置 */
+    }
+
     madgwick_priv_t *p = (madgwick_priv_t *)self->priv;
     if (param == FILTER_PARAM_KP) p->beta = value;  /* Madgwick 使用 beta */
 }
@@ -1191,6 +1365,10 @@ static void lkf_reset(filter_t *self)
 
 static void lkf_set_param(filter_t *self, filter_param_t param, float value)
 {
+    if (validate_filter_param(param, value) != 0) {
+        return;  /* 参数无效，拒绝设置 */
+    }
+
     lkf_priv_t *p = (lkf_priv_t *)self->priv;
     switch (param) {
         case FILTER_PARAM_Q_ANGLE:  p->Q_angle  = value; break;
@@ -1263,11 +1441,14 @@ filter_t* filter_create(filter_type_t type)
             f = filter_create_madgwick(0.5f);
             break;
         default:
+            FILTER_REPORT_ERROR(FILTER_ERR_INVALID_TYPE, "Invalid filter type");
             return NULL;
     }
     if (f) {
         f->is_static = 0;
         f->safety_config = (filter_safety_config_t)FILTER_SAFETY_DEFAULT;
+    } else {
+        FILTER_REPORT_ERROR(FILTER_ERR_ALLOC_FAILED, "Failed to allocate filter");
     }
     return f;
 }
@@ -1306,6 +1487,35 @@ void filter_set_degrade(filter_t *f, filter_degrade_t degrade) {
     }
 }
 
+/**
+ * @brief 安全销毁滤波器
+ *
+ * 处理所有边界情况：
+ * - NULL 指针：安全忽略
+ * - 静态分配：只重置状态，不释放内存
+ * - destroy 函数指针为 NULL：安全忽略
+ * - 动态分配：正常释放内存
+ */
+void filter_destroy_safe(filter_t *f)
+{
+    if (!f) {
+        return;  /* NULL 指针安全 */
+    }
+
+    if (f->is_static) {
+        /* 静态分配：重置状态但不释放内存 */
+        if (f->reset) {
+            f->reset(f);
+        }
+        return;
+    }
+
+    /* 动态分配：正常销毁 */
+    if (f->destroy) {
+        f->destroy(f);
+    }
+}
+
 const char* filter_degrade_name(filter_degrade_t degrade) {
     if (degrade >= 0 && degrade < FILTER_DEGRADE_COUNT) {
         return degrade_names[degrade];
@@ -1325,6 +1535,15 @@ int filter_check_gyro_quality(float gx, float gy, float gz) {
 /* ============================================================
  * 8. 静态分配支持（MCU友好）
  * ============================================================ */
+
+/**
+ * @brief 空操作的销毁函数（用于静态分配）
+ */
+static void static_destroy_noop(filter_t *self)
+{
+    /* 静态分配不需要销毁，但调用是安全的 */
+    (void)self;
+}
 
 /* 各滤波器私有数据大小 */
 static const size_t priv_sizes[] = {
@@ -1427,9 +1646,9 @@ filter_t* filter_create_static(filter_type_t type, void *buf, size_t buf_size) {
     f->degrade = FILTER_DEGRADE_NONE;
     f->priv = priv;
     f->is_static = 1;
-    f->destroy = NULL; /* 静态分配不需要销毁 */
+    f->destroy = static_destroy_noop; /* 静态分配使用空操作销毁函数，调用安全 */
     f->safety_config = (filter_safety_config_t)FILTER_SAFETY_DEFAULT;
-    
+
     return f;
 }
 
@@ -1437,41 +1656,41 @@ filter_t* filter_create_static(filter_type_t type, void *buf, size_t buf_size) {
  * 9. 数值安全保护
  * ============================================================ */
 
+/**
+    return 0;
+}
+
+/**
+ * @brief 验证输出有效性
+ */
 int filter_validate_output(const filter_output_t *out) {
     if (!out) return 0;
-    
+
     /* 检查NaN/Inf */
     if (isnan(out->pitch) || isinf(out->pitch) ||
         isnan(out->roll)  || isinf(out->roll)  ||
         isnan(out->yaw)   || isinf(out->yaw)) {
         return 0;
     }
-    
+
     /* 检查角度范围 */
     if (out->pitch < -180.0f || out->pitch > 180.0f ||
         out->roll  < -180.0f || out->roll  > 180.0f ||
         out->yaw   < -180.0f || out->yaw   > 180.0f) {
         return 0;
     }
-    
+
     return 1;
 }
 
+/**
+ * @brief 四元数归一化（公开 API）
+ *
+ * 委托给内部统一实现
+ */
 void filter_normalize_quaternion(float *q0, float *q1, float *q2, float *q3) {
     if (!q0 || !q1 || !q2 || !q3) return;
-    
-    float norm = sqrtf((*q0)*(*q0) + (*q1)*(*q1) + (*q2)*(*q2) + (*q3)*(*q3));
-    if (norm < 1e-10f) {
-        /* 退化为单位四元数 */
-        *q0 = 1.0f; *q1 = *q2 = *q3 = 0.0f;
-        return;
-    }
-    
-    float inv_norm = 1.0f / norm;
-    *q0 *= inv_norm;
-    *q1 *= inv_norm;
-    *q2 *= inv_norm;
-    *q3 *= inv_norm;
+    normalize_quaternion_internal(q0, q1, q2, q3);
 }
 
 void filter_regularize_covariance(float P[][7], int size, float factor) {

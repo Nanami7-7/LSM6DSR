@@ -25,11 +25,12 @@ int main(void) {
         FILTER_TYPE_COMPLEMENTARY,
         FILTER_TYPE_LPF,
         FILTER_TYPE_EKF,
+        FILTER_TYPE_LKF,
         FILTER_TYPE_MAHONY,
         FILTER_TYPE_MADGWICK
     };
 
-    for (int t = 0; t < 5; t++) {
+    for (int t = 0; t < 6; t++) {
         filter_input_t in = {
             .ax = -sinf(angle_rad), .ay = 0.0f, .az = cosf(angle_rad),
             .gx = 0.0f, .gy = 0.0f, .gz = 0.0f,
