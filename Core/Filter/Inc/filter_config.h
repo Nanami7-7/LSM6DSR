@@ -149,6 +149,27 @@ typedef enum {
 #define EKF_R_MEASURE_MIN      0.001f
 #define EKF_R_MEASURE_MAX      1.0f
 
+/* EKF 偏置幅值限制 (dps)
+ * 来源: LSM6DSR 数据手册 ±10 dps 偏置稳定性
+ * 防止 EKF 偏置状态发散而设置的上限 */
+#define EKF_BIAS_LIMIT_DEFAULT  20.0f   /* dps */
+#define EKF_BIAS_LIMIT_MIN      5.0f    /* dps */
+#define EKF_BIAS_LIMIT_MAX      50.0f   /* dps */
+
+/* EKF Chi-squared 门限
+ * 来源: 卡方分布表, 自由度=3
+ * 加速度计离群值检测, 创新超过阈值时跳过测量更新 */
+#define EKF_CHI2_THRESHOLD_DEFAULT  11.34f
+#define EKF_CHI2_THRESHOLD_MIN      5.0f
+#define EKF_CHI2_THRESHOLD_MAX      20.0f
+
+/* EKF 动态 R 适配参数
+ * 原理: 加速度计模长偏离 1g 时(运动/振动), 自动增大 R
+ * 使 EKF 更信任陀螺仪预测, 减少加速度计修正 */
+#define EKF_R_ADAPT_ENABLE_DEFAULT  0       /* 默认禁用 */
+#define EKF_R_ADAPT_FACTOR_MIN      0.1f
+#define EKF_R_ADAPT_FACTOR_MAX      10.0f
+
 /* [PAPER] Mahony et al., 2008, "Nonlinear complementary filters on the special orthogonal group"
  * 论文推荐kp = 1.0, ki = 0.3
  * 工程优化：kp = 10.0（快速收敛，适合嵌入式实时场景）

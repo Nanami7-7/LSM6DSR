@@ -148,6 +148,11 @@ typedef enum {
     FILTER_PARAM_R_MEASURE,         /**< EKF 测量噪声 */
     FILTER_PARAM_KP,                /**< Mahony/Madgwick 比例增益 */
     FILTER_PARAM_KI,                /**< Mahony/Madgwick 积分增益 */
+    /* EKF 增强参数 */
+    FILTER_PARAM_BIAS_LIMIT_DPS,    /**< EKF 偏置幅值限制 (dps) */
+    FILTER_PARAM_CHI2_THRESHOLD,    /**< EKF Chi-squared 门限 */
+    FILTER_PARAM_R_ADAPT_ENABLE,    /**< EKF 动态 R 适配使能 (0/1) */
+    FILTER_PARAM_R_ADAPT_FACTOR,    /**< EKF 动态 R 适配缩放因子 */
     FILTER_PARAM_COUNT              /**< 参数数量（勿用） */
 } filter_param_t;
 

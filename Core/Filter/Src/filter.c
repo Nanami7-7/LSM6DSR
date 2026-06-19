@@ -17,6 +17,7 @@
  */
 
 #include "../Inc/filter.h"
+#include "../Inc/filter_config.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
@@ -186,6 +187,38 @@ static int validate_filter_param(filter_param_t param, float value)
             if (value < 0.0f) {
                 FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
                                     "Gain parameter must be non-negative");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_BIAS_LIMIT_DPS:
+            if (value < 5.0f || value > 50.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "Bias limit must be in [5.0, 50.0] dps");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_CHI2_THRESHOLD:
+            if (value <= 0.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "Chi2 threshold must be positive");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_R_ADAPT_ENABLE:
+            if (value < 0.0f || value > 1.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "R_ADAPT_ENABLE must be 0 or 1");
+                return -1;
+            }
+            break;
+
+        case FILTER_PARAM_R_ADAPT_FACTOR:
+            if (value < 0.1f || value > 10.0f) {
+                FILTER_REPORT_ERROR(FILTER_ERR_INVALID_PARAM,
+                                    "R_ADAPT_FACTOR out of range [0.1, 10.0]");
                 return -1;
             }
             break;
@@ -435,6 +468,12 @@ typedef struct {
     float Q_angle;                      /**< 过程噪声-角度 */
     float Q_bias;                       /**< 过程噪声-偏置 */
     float R_measure;                    /**< 测量噪声 */
+    /* EKF 增强字段 */
+    float bias_limit_dps;               /**< 偏置幅值限制 (dps) */
+    float chi2_threshold;               /**< Chi-squared 门限 */
+    float R_adapt_factor;               /**< 动态 R 适配缩放因子 */
+    int   r_adapt_enable;               /**< 动态 R 适配使能 */
+    uint16_t update_count;              /**< 更新计数, 用于周期性正则化 */
 } ekf_priv_t;
 
 /* 矩阵操作辅助函数 */
@@ -617,6 +656,17 @@ static void ekf_update(filter_t *self, const filter_input_t *in, filter_output_t
     }
     ax /= acc_norm; ay /= acc_norm; az /= acc_norm;
 
+    /* ===== 动态 R 适配 ===== */
+    if (p->r_adapt_enable) {
+        float acc_mag_error = fabsf(acc_norm - 1.0f);
+        float r_factor = 1.0f + acc_mag_error * 10.0f;
+        if (r_factor > EKF_R_ADAPT_FACTOR_MAX) r_factor = EKF_R_ADAPT_FACTOR_MAX;
+        if (r_factor < EKF_R_ADAPT_FACTOR_MIN) r_factor = EKF_R_ADAPT_FACTOR_MIN;
+        p->R_adapt_factor = r_factor;
+    } else {
+        p->R_adapt_factor = 1.0f;
+    }
+
     /* 预测的重力方向 h(q) */
     float hx = 2.0f * (p->state[1]*p->state[3] - p->state[0]*p->state[2]);
     float hy = 2.0f * (p->state[0]*p->state[1] + p->state[2]*p->state[3]);
@@ -654,13 +704,14 @@ static void ekf_update(filter_t *self, const filter_input_t *in, filter_output_t
 
     /* S = H * (P * H^T) + R */
     float S[3][3];
+    float R_eff = p->R_measure * p->R_adapt_factor;
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
             S[i][j] = 0.0f;
             for (int k = 0; k < 7; k++) {
                 S[i][j] += H[i][k] * PHt[k][j];
             }
-            if (i == j) S[i][j] += p->R_measure;
+            if (i == j) S[i][j] += R_eff;
         }
     }
 
@@ -682,6 +733,21 @@ static void ekf_update(filter_t *self, const filter_input_t *in, filter_output_t
     S_inv[2][1] = (b*g - a*h) * inv_det;
     S_inv[2][2] = (a*e - b*d) * inv_det;
 
+    /* ===== Chi-squared 创新门控 ===== */
+    float chi2 = y[0] * (S_inv[0][0]*y[0] + S_inv[0][1]*y[1] + S_inv[0][2]*y[2])
+               + y[1] * (S_inv[1][0]*y[0] + S_inv[1][1]*y[1] + S_inv[1][2]*y[2])
+               + y[2] * (S_inv[2][0]*y[0] + S_inv[2][1]*y[1] + S_inv[2][2]*y[2]);
+
+    if (chi2 > p->chi2_threshold) {
+        /* 创新过大, 视为离群值, 跳过测量更新 */
+        q0 = p->state[0]; q1 = p->state[1]; q2 = p->state[2]; q3 = p->state[3];
+        out->q0 = q0; out->q1 = q1; out->q2 = q2; out->q3 = q3;
+        out->pitch = asinf(fmaxf(-1.0f, fminf(1.0f, -2.0f * (q1*q3 - q0*q2)))) * 180.0f / M_PI;
+        out->roll  = atan2f(2.0f * (q0*q1 + q2*q3), 1.0f - 2.0f * (q1*q1 + q2*q2)) * 180.0f / M_PI;
+        out->yaw   = atan2f(2.0f * (q0*q3 + q1*q2), 1.0f - 2.0f * (q2*q2 + q3*q3)) * 180.0f / M_PI;
+        return;
+    }
+
     /* ===== 7. 卡尔曼增益 K = P * H^T * S^-1 (7x3) ===== */
     float K[7][3];
     for (int i = 0; i < 7; i++) {
@@ -698,6 +764,12 @@ static void ekf_update(filter_t *self, const filter_input_t *in, filter_output_t
         for (int j = 0; j < 3; j++) {
             p->state[i] += K[i][j] * y[j];
         }
+    }
+
+    /* ===== 偏置幅值限制 ===== */
+    for (int i = 4; i < 7; i++) {
+        if (p->state[i] > p->bias_limit_dps) p->state[i] = p->bias_limit_dps;
+        else if (p->state[i] < -p->bias_limit_dps) p->state[i] = -p->bias_limit_dps;
     }
 
     /* 四元数归一化 */
@@ -756,7 +828,7 @@ static void ekf_update(filter_t *self, const filter_input_t *in, filter_output_t
         for (int j = 0; j < 7; j++) {
             for (int kk = 0; kk < 3; kk++) {
                 for (int ll = 0; ll < 3; ll++) {
-                    P_new[i][j] += K[i][kk] * p->R_measure * (kk==ll ? 1.0f : 0.0f) * K[j][ll];
+                    P_new[i][j] += K[i][kk] * R_eff * (kk==ll ? 1.0f : 0.0f) * K[j][ll];
                 }
             }
         }
@@ -772,6 +844,28 @@ static void ekf_update(filter_t *self, const filter_input_t *in, filter_output_t
     /* 对角线强制为正 */
     for (int i = 0; i < 7; i++) {
         if (p->P[i][i] < 1e-10f) p->P[i][i] = 1e-10f;
+    }
+
+    /* ===== 定期协方差正则化 (每100次更新) ===== */
+    p->update_count++;
+    if (p->update_count >= 100) {
+        p->update_count = 0;
+        /* 强制对称 */
+        for (int i = 0; i < 7; i++) {
+            for (int j = i + 1; j < 7; j++) {
+                float avg = 0.5f * (p->P[i][j] + p->P[j][i]);
+                p->P[i][j] = avg;
+                p->P[j][i] = avg;
+            }
+        }
+        /* 对角线下界 */
+        for (int i = 0; i < 7; i++) {
+            if (p->P[i][i] < 1e-10f) p->P[i][i] = 1e-10f;
+        }
+        /* 上界防发散 */
+        for (int i = 0; i < 7; i++) {
+            if (p->P[i][i] > 1e6f) p->P[i][i] = 1e6f;
+        }
     }
 
     /* ===== 10. 输出 ===== */
@@ -791,6 +885,8 @@ static void ekf_reset(filter_t *self)
     for (int i = 0; i < EKF_STATE_SIZE; i++) {
         p->P[i][i] = 1.0f;
     }
+    p->R_adapt_factor = 1.0f;
+    p->update_count = 0;
 }
 
 static void ekf_set_param(filter_t *self, filter_param_t param, float value)
@@ -804,6 +900,10 @@ static void ekf_set_param(filter_t *self, filter_param_t param, float value)
         case FILTER_PARAM_Q_ANGLE:  p->Q_angle  = value; break;
         case FILTER_PARAM_Q_BIAS:   p->Q_bias   = value; break;
         case FILTER_PARAM_R_MEASURE: p->R_measure = value; break;
+        case FILTER_PARAM_BIAS_LIMIT_DPS: p->bias_limit_dps = value; break;
+        case FILTER_PARAM_CHI2_THRESHOLD: p->chi2_threshold = value; break;
+        case FILTER_PARAM_R_ADAPT_ENABLE: p->r_adapt_enable = (int)value; break;
+        case FILTER_PARAM_R_ADAPT_FACTOR: p->R_adapt_factor = value; break;
         default: break;
     }
 }
@@ -836,6 +936,13 @@ filter_t* filter_create_ekf(float q_angle, float q_bias, float r_measure)
     for (int i = 0; i < EKF_STATE_SIZE; i++) {
         p->P[i][i] = 1.0f;
     }
+
+    /* 初始化增强字段 */
+    p->bias_limit_dps = EKF_BIAS_LIMIT_DEFAULT;
+    p->chi2_threshold = EKF_CHI2_THRESHOLD_DEFAULT;
+    p->R_adapt_factor = 1.0f;
+    p->r_adapt_enable = EKF_R_ADAPT_ENABLE_DEFAULT;
+    p->update_count = 0;
 
     f->update    = ekf_update;
     f->reset     = ekf_reset;
