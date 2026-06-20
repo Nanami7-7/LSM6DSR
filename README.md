@@ -177,7 +177,7 @@ if (!filter_check_acc_quality(ax, ay, az)) {
 
 - [分支管理规范](docs/BRANCHING.md)
 - [BSP 调参指南](docs/bsp_tuning_guide.md)
-- [硬件接线说明](Doc/hardware_wiring.md)
+- [硬件接线说明](docs/hardware_wiring.md)
 
 ## 最新改进 (v1.1.0)
 
