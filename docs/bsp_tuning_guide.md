@@ -14,7 +14,7 @@
 ┌─ main.c ──────────────────────────────────┐
 │  run_all_tests() / phase17_live_display()  │
 ├───────────────────────────────────────────┤
-│  test_lsm6dsr.c   测试层 (P1-P19)          │
+│  main.c          测试/展示层 (P1-P19/显示)  │
 │  bsp_lsm6dsr.c    业务层 (滤波器核心)       │
 │  lsm6dsr.c        驱动层 (寄存器读写)       │
 └───────────────────────────────────────────┘
@@ -542,4 +542,4 @@ gcc -o test_filters.exe test/test_filters.c Core/Filter/Src/filter.c \
 ./test_filters.exe
 ```
 
-当前测试覆盖：137个断言，12个测试套件，覆盖所有滤波器类型、退化模式、参数验证和边界条件。
+当前测试覆盖：230个断言（146 + 84），3个测试套件（test_filters.c, test_fixes.c, test_convergence.c），覆盖所有滤波器类型、退化模式、参数验证和边界条件。

@@ -1,6 +1,6 @@
 # EKF 姿态解算算法 — 项目实现详解
 
-> 基于 `filter.c` (452–878行) 与 `filter_config.h`
+> 基于 `filter.c` 与 `filter_config.h`
 > 滤波器类型: `FILTER_TYPE_EKF` | 传感器: LSM6DSR (6轴IMU) | 采样率: 100Hz
 
 ---
@@ -163,9 +163,9 @@ Q = diag(Q_angle·dt, Q_angle·dt, Q_angle·dt, Q_angle·dt,
 ```
 
 | 参数 | 代码变量 | 本项目设置值 | 物理含义 |
-|---|---|---|---|
-| Q_angle | `p->Q_angle` | **0.01** | 角度随机游走噪声 (rad²/s), 越大越信任陀螺仪预测 |
-| Q_bias | `p->Q_bias` | **0.01** | 偏置随机游走噪声 (dps²/s), 越大偏置收敛越快 |
+|---|---|---|---|---|
+| Q_angle | `p->Q_angle` | **0.001** | 角度随机游走噪声 (rad²/s), 越大越信任陀螺仪预测 |
+| Q_bias | `p->Q_bias` | **0.003** | 偏置随机游走噪声 (dps²/s), 越大偏置收敛越快 |
 
 #### 3.3.3 协方差更新计算
 
@@ -235,7 +235,7 @@ if (r_adapt_enable) {
 R_eff = R_measure * r_factor;
 ```
 
-> **本项目已禁用** `r_adapt_enable = 0`，使用固定 `R = 0.05`
+> **本项目已禁用** `r_adapt_enable = 0`，使用固定 `R = 0.03`（见 `filter_config.h` `EKF_R_MEASURE_DEFAULT`）
 
 ### 3.7 步骤 ⑦ — H 矩阵 (雅可比, 3×7)
 
@@ -281,7 +281,7 @@ if (χ² > chi2_threshold) {
 }
 ```
 
-本项目阈值: `chi2_threshold = 20.0` (自由度=3, ≈99.9%置信度)。
+本项目阈值: `chi2_threshold = 11.34` (自由度=3, χ² 99%置信度)。
 
 | χ² 阈值 | 置信度 | 行为 |
 |---|---|---|
@@ -300,7 +300,7 @@ for i = 0..6:
 **偏置幅值限制 (防发散):**
 
 ```c
-bias_limit_dps = 10.0  // 本项目设置, 匹配 LSM6DSR ±10dps 规格
+bias_limit_dps = 20.0  // 本项目设置 (`EKF_BIAS_LIMIT_DEFAULT`)，匹配 LSM6DSR ±10dps 规格（保留余量以应对温漂）
 for i = 4..6:
     if state[i] > bias_limit_dps:    state[i] = bias_limit_dps
     if state[i] < -bias_limit_dps:   state[i] = -bias_limit_dps
@@ -369,16 +369,19 @@ if (update_count >= 100) {
 
 ## 4. 参数总结
 
-### 4.1 当前项目配置 (task_imu.c)
+### 4.1 当前项目配置 (filter_config.h)
 
 | 参数 | 设置值 | 可调范围 | 作用 |
 |---|---|---|---|
-| Q_angle | **0.01** | 0.0001 ~ 0.1 | ↑增大: 更信任陀螺仪积分, 动态响应更快 |
-| Q_bias | **0.01** | 0.0001 ~ 0.1 | ↑增大: 偏置估计收敛更快, 但噪声更大 |
-| R_measure | **0.05** | 0.0001 ~ 1.0 | ↑增大: 更不信任加速度计修正, 平滑但滞后 |
-| bias_limit | **10.0 dps** | 5.0 ~ 50.0 | 匹配 LSM6DSR ±10dps 规格 |
-| chi2_threshold | **20.0** | 5.0 ~ 20.0 | ↑增大: 接受更多动态测量 |
+| Q_angle | **0.001** | 0.0001 ~ 0.1 | ↑增大: 更信任陀螺仪积分, 动态响应更快 |
+| Q_bias | **0.003** | 0.0001 ~ 0.1 | ↑增大: 偏置估计收敛更快, 但噪声更大 |
+| R_measure | **0.03** | 0.0001 ~ 1.0 | ↑增大: 更不信任加速度计修正, 平滑但滞后 |
+| bias_limit | **20.0 dps** | 5.0 ~ 50.0 | 偏置幅值上限，`EKF_BIAS_LIMIT_DEFAULT=20.0` |
+| chi2_threshold | **11.34** | 5.0 ~ 20.0 | ↑增大: 接受更多动态测量 |
 | r_adapt_enable | **0 (禁用)** | 0/1 | 禁用动态R适配, 使用固定R |
+| r_adapt_factor | **1.0** | 0.1 ~ 10.0 | 动态R缩放因子，`EKF_R_ADAPT_FACTOR`默认1.0（filter.c硬编码） |
+
+> **参数变更记录**: `EKF_R_MEASURE_DEFAULT` 在 v1.x 中为 `0.001f`，v2.0 起修正为 `0.03f`。前者基于 LSM6DSR 数据手册理论值推导，实测偏小导致加速度计修正过强、动态姿态抖动；0.03 更符合实际传感器噪声水平。
 
 ### 4.2 参数调优建议
 
@@ -390,6 +393,32 @@ if (update_count >= 100) {
 | 偏置发散 | ↓Q_bias 或 ↓bias_limit |
 | 快速运动时姿态跳变 | ↑chi2_threshold |
 | 静止时姿态漂移 | ↓R_measure (更信任ACC) |
+
+---
+
+### 4.3 filter_config.c 参数描述表
+
+`filter_config.c` 中的 `ekf_params[]` 数组为每个 EKF 参数提供了描述元数据（默认值、范围、来源、单位），可通过 `filter_config_get_params()` 在运行时查询：
+
+```c
+int count;
+const filter_param_desc_t *params = filter_config_get_params(FILTER_TYPE_EKF, &count);
+// count == 7（当前 EKF 参数数量）
+```
+
+**ekf_params[] 完整列表（7 项）**:
+
+| 参数枚举 | 默认值 | 范围 | 来源 | 单位 |
+|---|---|---|---|---|
+| `FILTER_PARAM_Q_ANGLE` | 0.001 | 0.0001~0.1 | LSM6DSR Datasheet | rad²/s |
+| `FILTER_PARAM_Q_BIAS` | 0.003 | 0.0001~0.1 | LSM6DSR Datasheet | dps²/s |
+| `FILTER_PARAM_R_MEASURE` | 0.03 | 0.001~1.0 | LSM6DSR Datasheet | g² |
+| `FILTER_PARAM_BIAS_LIMIT_DPS` | 20.0 | 5.0~50.0 | LSM6DSR Datasheet | dps |
+| `FILTER_PARAM_CHI2_THRESHOLD` | 11.34 | 5.0~20.0 | χ²分布, df=3, 99% | 无量纲 |
+| `FILTER_PARAM_R_ADAPT_ENABLE` | 0 | 0/1 | 工程调优 | 布尔 |
+| `FILTER_PARAM_R_ADAPT_FACTOR` | 1.0 | 0.1~10.0 | 工程调优 | 无量纲 |
+
+> `source_type` 字段（`PARAM_SOURCE_DATASHEET` / `PARAM_SOURCE_PAPER` / `PARAM_SOURCE_TUNED`）标识参数来源类型，便于用户判断参数调整的参考依据。
 
 ---
 
@@ -492,3 +521,110 @@ GYRO (dps)                  ACC (m/s²)
 │ yaw   = atan2(2(q₀q₃+q₁q₂), ...) │
 └───────────────────────────────────┘
 ```
+
+---
+
+## 9. EKF API 使用示例
+
+### 9.1 创建 EKF 实例
+
+```c
+#include "filter.h"
+#include "filter_config.h"
+
+/* 动态创建 */
+filter_t *f = filter_create(FILTER_TYPE_EKF);
+if (!f) { /* 错误处理 */ }
+
+/* 或静态分配（嵌入式推荐） */
+size_t buf_size = filter_get_static_size(FILTER_TYPE_EKF);
+static uint8_t ekf_buffer[256];  /* 确保 >= buf_size */
+filter_t *f2 = filter_create_static(FILTER_TYPE_EKF, ekf_buffer, sizeof(ekf_buffer));
+```
+
+### 9.2 配置 EKF 参数
+
+通过 `set_param()` 覆盖默认值（只调用需要修改的参数，其余自动使用 `filter_config.h` 的默认值）：
+
+```c
+f->set_param(f, FILTER_PARAM_Q_ANGLE,        0.01f);    /* 过程噪声-角度 */
+f->set_param(f, FILTER_PARAM_Q_BIAS,         0.01f);    /* 过程噪声-偏置 */
+f->set_param(f, FILTER_PARAM_R_MEASURE,      0.05f);    /* 覆盖库默认值 0.03 */
+f->set_param(f, FILTER_PARAM_BIAS_LIMIT_DPS, 10.0f);    /* 匹配 LSM6DSR ±10dps */
+f->set_param(f, FILTER_PARAM_CHI2_THRESHOLD, 20.0f);    /* ≈99.9% 置信度, 宽松门限 */
+f->set_param(f, FILTER_PARAM_R_ADAPT_ENABLE, 0.0f);     /* 禁用动态 R 适配 */
+f->set_param(f, FILTER_PARAM_R_ADAPT_FACTOR, 1.0f);     /* R 缩放因子 */
+```
+
+### 9.3 运行 EKF
+
+```c
+filter_input_t in = {
+    .ax = acc[0], .ay = acc[1], .az = acc[2],
+    .gx = gyro[0], .gy = gyro[1], .gz = gyro[2],
+    .dt = 0.01f    /* 100Hz */
+};
+filter_output_t out;
+f->update(f, &in, &out);
+printf("pitch=%.2f roll=%.2f yaw=%.2f\n", out.pitch, out.roll, out.yaw);
+```
+
+### 9.4 释放
+
+```c
+f->destroy(f);  /* 静态分配只需 destroy，buffer 由用户管理 */
+```
+
+---
+
+## 10. 构建验证与回归测试
+
+### 10.1 编译验证
+
+```bash
+cd LSM6DSR
+make clean && make
+# 期望: 0 error, 无新增 warning
+```
+
+### 10.2 EKF 回归测试
+
+项目提供 EKF 专用测试程序，覆盖正常收敛、旋转跟踪、离群值拒绝等场景：
+
+```bash
+# 静态测试: pitch/roll ≈ 0，验证静止收敛
+./test_ekf --mode=static --duration=10
+
+# 旋转测试: 90dps 输入 → 验证航向角跟踪
+./test_ekf --mode=rotation --rate=90dps --duration=2
+
+# 离群值测试: 注入 5g → 验证 Chi-squared 门控跳过测量更新
+./test_ekf --mode=outlier --inject=5g
+```
+
+---
+
+## 11. 开发者注意事项
+
+### 11.1 API 稳定性
+
+所有公开 API（`filter_create` / `filter_create_static` / `update` / `set_param` / `destroy`）的函数签名保持稳定。`filter_param_t` 枚举仅在末尾 `FILTER_PARAM_COUNT` 之前增加新值，不影响已有代码的枚举序号。
+
+### 11.2 参数默认值安全
+
+| 新增参数 | 默认值 | 说明 |
+|---|---|---|
+| `FILTER_PARAM_BIAS_LIMIT_DPS` | 20.0 dps | 不调用 `set_param` 即使用此值 |
+| `FILTER_PARAM_CHI2_THRESHOLD` | 11.34 | 等效 χ² 99% 置信度 |
+| `FILTER_PARAM_R_ADAPT_ENABLE` | 0 (禁用) | 默认不使用动态 R |
+| `FILTER_PARAM_R_ADAPT_FACTOR` | 1.0 | R 缩放因子，禁用时无效 |
+
+所有新增参数在 `filter_create_ekf()` 中被初始化为安全默认值，应用层不调用 `set_param()` 不会引发异常行为。
+
+### 11.3 静态分配注意事项
+
+EKF 内部结构体 `ekf_priv_t` 包含 5 个增强字段（约 20 字节增量）。使用 `filter_create_static()` 时：
+
+- 始终通过 `filter_get_static_size(FILTER_TYPE_EKF)` 查询实际所需缓冲区大小
+- 不要假设固定大小（如 `sizeof(ekf_priv_t)` 或硬编码 128 字节）
+- 跨编译器版本升级时，建议重新编译所有使用静态 EKF 实例的模块

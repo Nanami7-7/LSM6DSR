@@ -1,32 +1,39 @@
-# LSM6DSR 分支管理工作流
-
+﻿# LSM6DSR 分支管理工作流
 ## 1. 分支策略概述
 
-本项目采用 **通用层 + 平台分支** 的分支模型。核心思路：
-
+本项目采用**通用层 + 平台分支** 的分支模型。核心思路：
 - `master` 分支只维护**平台无关的通用代码**（驱动层 + BSP 层 + ST 寄存器定义）
 - 每个硬件平台一个独立分支，包含**平台特定的 HAL 配置、启动文件、外设驱动、测试代码**
 - 通用层更新通过脚本自动同步到所有平台分支
-
 这种设计让不同平台的开发者互不干扰，同时保证通用驱动的 bugfix 能快速同步到所有平台。
-
 ---
 
 ## 2. 分支结构
 
 ```
 master (通用层)
-├── Core/Src/lsm6dsr.c          # 驱动层
-├── Core/Src/bsp_lsm6dsr.c      # 业务层
-├── Core/Inc/lsm6dsr.h          # 驱动头文件
-├── Core/Inc/bsp_lsm6dsr.h      # 业务头文件
-├── lsm6dsr_STdC/               # ST 官方寄存器定义
-├── ports/                      # 平台桩文件目录
-│   ├── mspm0g3507/
+`Core/Src/lsm6dsr.c`          # 驱动层
+`Core/Src/bsp_lsm6dsr.c`      # 业务层
+`Core/Inc/lsm6dsr.h`          # 驱动头文件
+`Core/Inc/bsp_lsm6dsr.h`      # 业务头文件
+`Core/Filter/`                # 滤波器库 (filter.c/filter_config.c/filter_chain.c)
+│   ├── `Inc/`
+│   └── `Src/`
+`Core/Adapter/`               # lsm6dsr_io_t → stmdev_ctx_t 适配层
+│   ├── lsm6dsr_adapter.h
+│   └── lsm6dsr_adapter.c
+`lsm6dsr_STdC/`               # ST 官方寄存器定义
+`ports/`                      # 平台桩文件目录
+│   ├── mspm0g3507/             # 已实现 SPI+I2C 桥接 + 软件I2C
 │   ├── ch32/
 │   └── at32/
-├── scripts/                    # 自动化脚本
-└── docs/                       # 文档
+`test/`                       # GCC 测试套件
+│   ├── test_filters.c
+│   ├── test_fixes.c
+│   ├── test_convergence.c
+│   └── scripts/
+`docs/`                       # 文档
+`examples/`                   # 使用示例
 
 stm32f407 (STM32F407 平台)
 ├── [继承 master 所有通用文件]
@@ -37,12 +44,26 @@ stm32f407 (STM32F407 平台)
 ├── Drivers/                    # STM32 HAL 库
 └── MDK-ARM/                    # Keil 工程文件
 
-mspm0g3507 (MSPM0G3507 平台)
+mspm0g3507 (MSPM0G3507 平台) -- **实际分支: mspm0g3507 (已实现)**
 ├── [继承 master 所有通用文件]
-└── [平台特定文件]
+├── ports/mspm0g3507/
+│   ├── i2c_bridge.c          # 硬件 I2C 桥接 (MSPM0 DL 库)
+│   ├── i2c_bridge_soft.c     # 软件 GPIO 位 bang I2C (PA0=SCL, PA1=SDA)
+│   ├── spi_bridge.c          # 硬件 SPI 桥接 (MSPM0 DL 库)
+│   ├── platform_mspm0.c      # 平台延时/时间戳实现
+│   └── porting/              # 移植文档包
+├── Core/Adapter/
+│   ├── lsm6dsr_adapter.h     # lsm6dsr_io_t → stmdev_ctx_t 适配层
+│   └── lsm6dsr_adapter.c     # 对接 ST 官方 325 个寄存器函数
+├── test/
+│   ├── test_filters.c        # 滤波器单元测试 (146断言)
+│   ├── test_fixes.c          # 修复回归测试 (84断言)
+│   ├── test_convergence.c    # 6种滤波器收敛性测试
+│   └── scripts/verify_filters.py  # 自动化测试编排
+└── [Keil 工程文件 + SysConfig 配置]
 
 ch32 (CH32 平台)
-├── [继承 master 所有通用文件]
+│   `Core/Src/bsp_lsm6dsr.c` | 业务层 | 支持6种可切换滤波器(EKF/LKF/Mahony等)、多实例、偏置校准、静止检测、VOFA+ 格式化、退化模式 |
 └── [平台特定文件]
 
 at32 (AT32 平台)
@@ -56,8 +77,8 @@ at32 (AT32 平台)
 |------|------|------|
 | `Core/Src/lsm6dsr.c` | 驱动层 | 寄存器读写、ACC/GYRO/TEMP 读取、FIFO、自检 |
 | `Core/Inc/lsm6dsr.h` | 驱动层 | 寄存器映射、I/O 抽象 `lsm6dsr_io_t`、枚举 |
-| `Core/Src/bsp_lsm6dsr.c` | 业务层 | 互补滤波、偏置校准、静止检测、VOFA+ 格式化 |
-| `Core/Inc/bsp_lsm6dsr.h` | 业务层 | 配置宏、数据结构、生产 API 声明 |
+| `Core/Src/bsp_lsm6dsr.c` | 业务层 | 支持6种可切换滤波器(EKF/LKF/Mahony等)、多实例、偏置校准、静止检测、VOFA+ 格式化、退化模式 |
+| `Core/Inc/bsp_lsm6dsr.h` | 业务层 | 配置宏、数据结构、生成 API 声明 |
 | `lsm6dsr_STdC/` | 参考 | ST 官方 LSM6DSR Standard C 驱动 |
 
 ### 平台特定文件（仅在对应分支）
@@ -74,9 +95,7 @@ at32 (AT32 平台)
 ---
 
 ## 3. 新平台开发流程
-
 以添加 AT32 平台为例：
-
 ### 3.1 从 master 创建平台分支
 
 ```bash
@@ -85,9 +104,7 @@ git checkout -b at32
 ```
 
 ### 3.2 创建平台桩文件
-
 在 `ports/at32/` 下创建桩文件，提供函数签名和 TODO 注释：
-
 - `test_lsm6dsr.c` — I2C 桥接函数桩（定义 `lsm6dsr_io` 实例）
 - `test_lsm6dsr.h` — 测试层头文件桩
 - `README.md` — 平台实现说明
@@ -113,7 +130,6 @@ git add Core/Src/i2c.c Core/Src/gpio.c ...
 ### 3.4 实现平台 I2C 桥接
 
 在 `Core/Src/test_lsm6dsr.c` 中实现平台特定的 I2C 读写函数：
-
 ```c
 // 示例：AT32 平台
 static int32_t at32_i2c_read(void *handle, uint8_t reg, uint8_t *buf, uint16_t len)
@@ -124,8 +140,7 @@ static int32_t at32_i2c_read(void *handle, uint8_t reg, uint8_t *buf, uint16_t l
 }
 ```
 
-然后将函数指针赋给 `lsm6dsr_io`：
-
+然后将函数指针赋值给 `lsm6dsr_io`：
 ```c
 lsm6dsr_io_t lsm6dsr_io = {
     .handle = &hi2c1,
@@ -135,7 +150,6 @@ lsm6dsr_io_t lsm6dsr_io = {
 ```
 
 ### 3.5 提交并推送
-
 ```bash
 git add -A
 git commit -m "feat(at32): add platform stub files and HAL integration"
@@ -143,7 +157,6 @@ git push origin at32
 ```
 
 ### 3.6 更新 ports/ 桩文件（回到 master）
-
 ```bash
 git checkout master
 git add ports/at32/
@@ -153,9 +166,7 @@ git commit -m "feat(ports): add AT32 platform stub files"
 ---
 
 ## 4. 通用层更新流程
-
 当修改了 `master` 上的通用核心文件（驱动层或 BSP 层），需要同步到所有平台分支。
-
 ### 4.1 手动同步单个平台
 
 ```bash
@@ -189,9 +200,7 @@ git status  # 确认无未提交修改
 ```
 
 脚本会依次切换到 `stm32f407`、`mspm0g3507`、`ch32`、`at32` 并执行 `git merge master`。如果某个分支出现冲突，脚本会暂停并输出冲突文件列表。
-
 ### 4.3 同步后推送所有分支
-
 ```bash
 git push origin master
 git push origin stm32f407 mspm0g3507 ch32 at32
@@ -240,7 +249,6 @@ git push origin master
 冲突通常发生在以下场景：
 - 平台分支修改了某个通用文件，master 也修改了同一文件
 - 平台分支添加了同名但内容不同的文件
-
 ### 5.1 识别冲突
 
 ```bash
@@ -283,13 +291,11 @@ git checkout master
 - **不要在平台分支上修改通用核心文件**。如果需要修改，回到 master 操作。
 - **平台桩文件只在 master 的 `ports/` 目录维护**，不要在平台分支上直接修改 `ports/` 下的文件。
 - **定期同步**。master 有更新就尽快同步到平台分支，避免差异累积。
-
 ---
 
 ## 6. 提交规范
 
 本项目使用 [Conventional Commits](https://www.conventionalcommits.org/) 规范。
-
 ### 6.1 格式
 
 ```
@@ -352,7 +358,6 @@ git commit -m "asdf"             # 无意义
 ### 6.5 平台特定提交
 
 当提交只影响某个平台时，在 scope 中标注平台名：
-
 ```bash
 git commit -m "feat(stm32f407): add DMA I2C transfer"
 git commit -m "fix(at32): correct I2C clock configuration"
@@ -362,7 +367,6 @@ git commit -m "chore(mspm0g3507): update SDK to v2.0"
 ---
 
 ## 7. 快速参考
-
 ### 常用命令
 
 ```bash
@@ -387,7 +391,6 @@ git diff master..stm32f407 --stat
 ```
 
 ### 分支状态检查
-
 ```bash
 # 检查 master 是否有未同步的提交
 git log --oneline stm32f407..master

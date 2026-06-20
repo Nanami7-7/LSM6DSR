@@ -1,4 +1,4 @@
-# LSM6DSR 硬件接线说明
+﻿﻿# LSM6DSR 硬件接线说明
 
 ## 平台信息
 
@@ -8,6 +8,9 @@
 | 传感器 | LSM6DSR（LGA-14L 封装） |
 | 通信接口 | I²C1（硬件 I²C），Mode 1 |
 | 调试输出 | USART1（115200 baud 8N1） |
+
+
+> **注**: 本文以 STM32F407 为例。MSPM0G3507 移植版的引脚分配见 ports/mspm0g3507/porting/docs/hardware_setup.md
 
 ---
 
