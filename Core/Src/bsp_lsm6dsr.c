@@ -10,16 +10,25 @@
  *       2. ACC 幅值校验 (|mag² - 1G| < tol)
  *       3. GYRO 幅值校验 (|gyro| > threshold → 运动)
  *   - Runtime 偏置跟踪：静止时 bg += rate × fg (X/Y vs Z 独立速率)
- *   - DWT 周期计数器计时 (~6ns 精度，替代 HAL_GetTick 的 1ms 抖动)
+ *   - 平台抽象计时（fp_get_cycles / fp_delay_ms），不直接依赖 DWT/HAL
  *   - VOFA+ 格式化：10 通道 FireWater 协议
+ *
+ * 平台解耦说明（Phase 2）：
+ *   原代码硬编码 DWT->CYCCNT / HAL_Delay / CoreDebug->DEMCR，阻塞非 ARM 平台。
+ *   现全部通过 filter_platform.h 的 fp_* 钩子调用：
+ *     - fp_init_timing()  替代 DWT/CoreDebug 初始化
+ *     - fp_get_cycles()   替代 DWT->CYCCNT 读取
+ *     - fp_delay_ms()     替代 HAL_Delay
+ *     - fp_sqrt/atan2     替代 libm（分支可覆盖为 CMSIS-DSP）
+ *   分支在 platform_<mcu>.c 提供这些钩子的实现即可移植。
  */
 #include "bsp_lsm6dsr.h"
 #include "lsm6dsr.h"
 #include "main.h"
+#include "filter_platform.h"
+#include "filter_math.h"
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
-#include <stdlib.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -31,8 +40,8 @@ extern lsm6dsr_io_t lsm6dsr_io;
 /* ---- Runtime state (internal) ---- */
 static float   bgx, bgy, bgz;          /**< 陀螺偏置 (dps) */
 static int     cal_ok;                  /**< 校准成功标志 */
-static double  pitch, roll, yaw;        /**< 滤波器状态 (deg) */
-static uint32_t last_tick;              /**< 上一帧 DWT CYCCNT (~6ns 分辨率) */
+static float   pitch, roll, yaw;        /**< 滤波器状态 (deg) — 原 double 改 float 避免 M4F 双精度损失 */
+static uint32_t last_tick;              /**< 上一帧周期计数（fp_get_cycles 返回值） */
 static int     initialized;             /**< init 完成守护标志 */
 
 /* ---- Adaptive filter state ---- */
@@ -44,7 +53,9 @@ static int     var_samples;                /**< 已采帧数 */
 static float   alpha;                      /**< 当前互补滤波 α */
 static float   last_variance;              /**< 上一帧方差 (调试用) */
 
-/* ---- Filter instance ---- */
+/* ---- Filter instance (静态分配) ---- */
+#define FILTER_STATIC_BUF_SIZE 512  /**< 静态缓冲区大小，足够容纳最大滤波器 */
+static uint8_t filter_static_buf[FILTER_STATIC_BUF_SIZE] __attribute__((aligned(4)));  /**< 4字节对齐的静态缓冲区 */
 static filter_t *active_filter = NULL;  /**< 当前活动滤波器实例 */
 static filter_type_t current_filter_type = FILTER_TYPE_COMPLEMENTARY;  /**< 当前滤波器类型 */
 
@@ -96,9 +107,10 @@ static float compute_acc_variance(void)
  */
 static void init_filter_state(float ax0, float ay0, float az0)
 {
-    pitch = atan2(-ax0, sqrt(ay0*ay0 + az0*az0)) * 180.0 / M_PI;
-    roll  = atan2( ay0, sqrt(ax0*ax0 + az0*az0)) * 180.0 / M_PI;
-    yaw   = 0.0;
+    /* ACC → 欧拉角（通过 fp_* 钩子，分支可覆盖为 CMSIS-DSP） */
+    pitch = fp_atan2(-ax0, fp_sqrt(ay0*ay0 + az0*az0)) * RAD2DEG_F;
+    roll  = fp_atan2( ay0, fp_sqrt(ax0*ax0 + az0*az0)) * RAD2DEG_F;
+    yaw   = 0.0f;
 
     var_buf_idx = 0;
     var_samples = BSP_ACC_VAR_WINDOW;
@@ -128,7 +140,7 @@ void bsp_lsm6dsr_init(void)
 {
     /* Full reset + wait */
     lsm6dsr_reset(&lsm6dsr_io);
-    HAL_Delay(100);
+    fp_delay_ms(100);
 
     /* Debug: hardware info */
     {
@@ -146,7 +158,7 @@ void bsp_lsm6dsr_init(void)
         LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
     lsm6dsr_gyro_config(&lsm6dsr_io,
         LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
-    HAL_Delay(BSP_CALIB_SETTLE_MS);
+    fp_delay_ms(BSP_CALIB_SETTLE_MS);
 
     printf("  ACC ODR=104Hz FS=4G  GYRO ODR=104Hz FS=250dps\r\n");
 
@@ -158,23 +170,28 @@ void bsp_lsm6dsr_init(void)
         init_filter_state(ax0, ay0, az0);
     }
 
-    /* ---- Create filter instance ---- */
-    active_filter = filter_create(current_filter_type);
+    /* ---- Create filter instance (静态分配) ---- */
+    size_t filter_size = filter_get_static_size(current_filter_type);
+    if (filter_size > FILTER_STATIC_BUF_SIZE) {
+        printf("  ERROR: Filter too large (%zu > %d)\r\n", filter_size, FILTER_STATIC_BUF_SIZE);
+        while (1);  /* 阻塞报错 */
+    }
+    active_filter = filter_create_static(current_filter_type, filter_static_buf, FILTER_STATIC_BUF_SIZE);
     if (!active_filter) {
         printf("  ERROR: Failed to create filter\r\n");
         while (1);  /* 阻塞报错 */
     }
-    printf("  Filter: %s\r\n", filter_type_name(current_filter_type));
+    printf("  Filter: %s (static alloc)\r\n", filter_type_name(current_filter_type));
 
 
     printf("  Initial pitch=%.2f  roll=%.2f\r\n",
            (double)pitch, (double)roll);
 
-    /* switch to DWT cycle counter for sub-us dt precision */
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-    last_tick = DWT->CYCCNT;
+    /* 平台抽象计时初始化（原 DWT->CYCCNT/CoreDebug->DEMCR，现 fp_init_timing）
+     * stm32f407 分支的 platform_stm32f407.c 在 fp_init_timing 内使能 DWT。
+     * M0+ 分支无 DWT，fp_init_timing 为空，fp_get_cycles 返回 0，BSP 走 fp_get_dt 回退。 */
+    fp_init_timing();
+    last_tick = fp_get_cycles();
     memset(&last_data, 0, sizeof(last_data));
     is_stationary = 1;
     initialized = 1;
@@ -220,16 +237,16 @@ void bsp_lsm6dsr_calibrate(void)
                                     LSM6DSR_GYRO_FS_250DPS);
 
             float mag2 = tax*tax + tay*tay + taz*taz;
-            if (fabsf(mag2 - BSP_CALIB_ACC_MAG_REF) < BSP_CALIB_ACC_MAG_TOL
-                && fabsf(tax - pax) < BSP_CALIB_ACC_DELTA_MAX
-                && fabsf(tay - pay) < BSP_CALIB_ACC_DELTA_MAX
-                && fabsf(taz - paz) < BSP_CALIB_ACC_DELTA_MAX)
+            if (fp_fabs(mag2 - BSP_CALIB_ACC_MAG_REF) < BSP_CALIB_ACC_MAG_TOL
+                && fp_fabs(tax - pax) < BSP_CALIB_ACC_DELTA_MAX
+                && fp_fabs(tay - pay) < BSP_CALIB_ACC_DELTA_MAX
+                && fp_fabs(taz - paz) < BSP_CALIB_ACC_DELTA_MAX)
             {
                 bgx += tgx; bgy += tgy; bgz += tgz;
                 n_valid++;
             }
             pax = tax; pay = tay; paz = taz;
-            HAL_Delay(BSP_CALIB_SAMPLE_DELAY_MS);
+            fp_delay_ms(BSP_CALIB_SAMPLE_DELAY_MS);
         }
 
         if (n_valid >= BSP_CALIB_SAMPLES / 2)
@@ -292,10 +309,19 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
 {
     if (!initialized) return;
 
-    /* ---- timing (DWT cycle counter, ~6ns resolution) ---- */
-    uint32_t now = DWT->CYCCNT;
-    double dt = (now - last_tick) / (double)SystemCoreClock;
-    if (dt > 0.5) dt = 0.01;
+    /* ---- timing (平台周期计数器，~1/SystemCoreClock 秒精度) ----
+     * stm32f407: fp_get_cycles 返回 DWT->CYCCNT（~6ns @ 168MHz）
+     * M0+/PC:    fp_get_cycles 返回 0，dt 走 fp_get_dt 回退（100Hz 假设） */
+    uint32_t now = fp_get_cycles();
+    float dt;
+    if (now == 0u && last_tick == 0u) {
+        /* 平台无周期计数器：用 fp_get_dt（默认 0.01f，分支可在 platform_<mcu>.c 覆盖） */
+        dt = fp_get_dt();
+    } else {
+        /* 有周期计数器：差值 / SystemCoreClock */
+        dt = (float)(now - last_tick) / (float)SystemCoreClock;
+        if (dt > 0.5f) dt = 0.01f;   /* 首帧或长暂停保护 */
+    }
     last_tick = now;
 
     /* ---- read sensors ---- */
@@ -318,7 +344,7 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
     int stationary = (var_sum < BSP_ACC_VAR_THRESHOLD);
     /* dual-check: accel magnitude must be near 1G */
     float mag2 = fax*fax + fay*fay + faz*faz;
-    if (fabsf(mag2 - BSP_CALIB_ACC_MAG_REF) >= BSP_CALIB_ACC_MAG_TOL) {
+    if (fp_fabs(mag2 - BSP_CALIB_ACC_MAG_REF) >= BSP_CALIB_ACC_MAG_TOL) {
         stationary = 0;
     }
 
@@ -345,7 +371,7 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
         filter_input_t fin = {
             .ax = fax, .ay = fay, .az = faz,
             .gx = fgx, .gy = fgy, .gz = fgz,
-            .dt = (float)dt
+            .dt = dt
         };
         filter_output_t fout;
         active_filter->update(active_filter, &fin, &fout);
@@ -355,14 +381,14 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
         data->yaw   = fout.yaw;
     } else {
         /* fallback: 互补滤波器 (should not happen) */
-        double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
-        double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
-        pitch = 0.98 * (pitch + fgy * dt) + 0.02 * acc_pitch;
-        roll  = 0.98 * (roll  - fgx * dt) + 0.02 * acc_roll;
+        float acc_pitch = fp_atan2(-fax, fp_sqrt(fay*fay + faz*faz)) * RAD2DEG_F;
+        float acc_roll  = fp_atan2( fay, fp_sqrt(fax*fax + faz*faz)) * RAD2DEG_F;
+        pitch = 0.98f * (pitch + fgy * dt) + 0.02f * acc_pitch;
+        roll  = 0.98f * (roll  - fgx * dt) + 0.02f * acc_roll;
         yaw  += fgz * dt;
-        data->pitch = (float)pitch;
-        data->roll  = (float)roll;
-        data->yaw   = (float)yaw;
+        data->pitch = pitch;
+        data->roll  = roll;
+        data->yaw   = yaw;
     }
 
     /* ---- fill result struct ---- */
@@ -461,21 +487,25 @@ int bsp_lsm6dsr_set_filter(filter_type_t type)
         return -1;
     }
 
-    /* 销毁旧滤波器 */
-    if (active_filter) {
-        active_filter->destroy(active_filter);
-        active_filter = NULL;
+    /* 检查缓冲区大小 */
+    size_t filter_size = filter_get_static_size(type);
+    if (filter_size > FILTER_STATIC_BUF_SIZE) {
+        printf("  ERROR: Filter too large (%zu > %d)\r\n", filter_size, FILTER_STATIC_BUF_SIZE);
+        return -1;
     }
 
+    /* 静态分配不需要销毁旧滤波器，直接重新初始化缓冲区 */
+    memset(filter_static_buf, 0, FILTER_STATIC_BUF_SIZE);
+
     /* 创建新滤波器 */
-    active_filter = filter_create(type);
+    active_filter = filter_create_static(type, filter_static_buf, FILTER_STATIC_BUF_SIZE);
     if (!active_filter) {
         printf("  ERROR: Failed to create filter type %d\r\n", type);
         return -1;
     }
 
     current_filter_type = type;
-    printf("  Filter switched to: %s\r\n", filter_type_name(type));
+    printf("  Filter switched to: %s (static alloc)\r\n", filter_type_name(type));
     return 0;
 }
 

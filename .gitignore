@@ -41,3 +41,9 @@ test/__pycache__/
 test/*.pyc
 test/.pytest_cache/
 test/venv/
+
+.*/
+!.githooks/
+*.exe
+*.o
+__pycache__/

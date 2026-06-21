@@ -1,0 +1,111 @@
+========================================
+  IMU婊ゆ尝鍣ㄦ暟瀛﹂獙璇佹祴璇?
+========================================
+娴嬭瘯閰嶇疆锛歞t=0.010s, 杩唬=1000, 瀹瑰樊=0.5掳
+
+=== 娴嬭瘯1锛氭护娉㈠櫒鍒涘缓鍜岄攢姣?===
+  [PASS] Complementary 鍒涘缓鎴愬姛
+  [PASS] Complementary 绫诲瀷姝ｇ‘
+  [PASS] Complementary update鍑芥暟闈炵┖
+  [PASS] Complementary priv鏁版嵁闈炵┖
+  [PASS] LPF 鍒涘缓鎴愬姛
+  [PASS] LPF 绫诲瀷姝ｇ‘
+  [PASS] LPF update鍑芥暟闈炵┖
+  [PASS] LPF priv鏁版嵁闈炵┖
+  [PASS] EKF 鍒涘缓鎴愬姛
+  [PASS] EKF 绫诲瀷姝ｇ‘
+  [PASS] EKF update鍑芥暟闈炵┖
+  [PASS] EKF priv鏁版嵁闈炵┖
+  [PASS] Mahony 鍒涘缓鎴愬姛
+  [PASS] Mahony 绫诲瀷姝ｇ‘
+  [PASS] Mahony update鍑芥暟闈炵┖
+  [PASS] Mahony priv鏁版嵁闈炵┖
+  [PASS] Madgwick 鍒涘缓鎴愬姛
+  [PASS] Madgwick 绫诲瀷姝ｇ‘
+  [PASS] Madgwick update鍑芥暟闈炵┖
+  [PASS] Madgwick priv鏁版嵁闈炵┖
+  [PASS] |?? 鍒涘缓鎴愬姛
+  [PASS] |?? 绫诲瀷姝ｇ‘
+  [PASS] |?? update鍑芥暟闈炵┖
+  [PASS] |?? priv鏁版嵁闈炵┖
+  [PASS] 鏃犳晥绫诲瀷杩斿洖NULL
+
+=== 娴嬭瘯2锛氶潤鎬佸Э鎬?- 姘村钩鏀剧疆 ===
+  [PASS] Complementary pitch鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Complementary roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Complementary 杈撳嚭鏈夋晥
+  [PASS] LPF pitch鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LPF roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LPF 杈撳嚭鏈夋晥
+  [PASS] EKF pitch鈮?掳 (瀹為檯=-0.00掳)
+  [PASS] EKF roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] EKF 杈撳嚭鏈夋晥
+  [PASS] LKF pitch鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LKF roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LKF 杈撳嚭鏈夋晥
+  [PASS] Mahony pitch鈮?掳 (瀹為檯=-0.00掳)
+  [PASS] Mahony roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Mahony 杈撳嚭鏈夋晥
+  [PASS] Madgwick pitch鈮?掳 (瀹為檯=-0.00掳)
+  [PASS] Madgwick roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Madgwick 杈撳嚭鏈夋晥
+
+=== 娴嬭瘯3锛氶潤鎬佸Э鎬?- 淇话45搴?===
+  [PASS] Complementary pitch鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] Complementary roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LPF pitch鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] LPF roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] EKF pitch鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] EKF roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LKF pitch鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] LKF roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Mahony pitch鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] Mahony roll鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Madgwick pitch鈮?5掳 (瀹為檯=44.96掳)
+  [PASS] Madgwick roll鈮?掳 (瀹為檯=0.00掳)
+
+=== 娴嬭瘯4锛氶潤鎬佸Э鎬?- 妯粴45搴?===
+  [PASS] Complementary pitch鈮?掳 (瀹為檯=0.00掳)
+  [PASS] Complementary roll鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] LPF pitch鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LPF roll鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] EKF pitch鈮?掳 (瀹為檯=-0.00掳)
+  [PASS] EKF roll鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] LKF pitch鈮?掳 (瀹為檯=0.00掳)
+  [PASS] LKF roll鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] Mahony pitch鈮?掳 (瀹為檯=-0.00掳)
+  [PASS] Mahony roll鈮?5掳 (瀹為檯=45.00掳)
+  [PASS] Madgwick pitch鈮?掳 (瀹為檯=-0.00掳)
+  [PASS] Madgwick roll鈮?5掳 (瀹為檯=44.96掳)
+
+=== 娴嬭瘯5锛氬姩鎬佹棆杞?- 鎭掑畾瑙掗€熷害绉垎 ===
+  [PASS] Complementary yaw鈮?00掳 (瀹為檯=100.00掳)
+  [PASS] Complementary 鍔ㄦ€佽緭鍑烘湁鏁?
+  [PASS] LPF yaw鈮?00掳 (瀹為檯=100.00掳)
+  [PASS] LPF 鍔ㄦ€佽緭鍑烘湁鏁?
+  [PASS] EKF yaw鈮?00掳 (瀹為檯=100.00掳)
+  [PASS] EKF 鍔ㄦ€佽緭鍑烘湁鏁?
+  [PASS] LKF yaw鈮?00掳 (瀹為檯=100.00掳)
+  [PASS] LKF 鍔ㄦ€佽緭鍑烘湁鏁?
+  [PASS] Mahony yaw鈮?00掳 (瀹為檯=100.00掳)
+  [PASS] Mahony 鍔ㄦ€佽緭鍑烘湁鏁?
+  [PASS] Madgwick yaw鈮?00掳 (瀹為檯=100.00掳)
+  [PASS] Madgwick 鍔ㄦ€佽緭鍑烘湁鏁?
+
+=== 娴嬭瘯6锛氬洓鍏冩暟褰掍竴鍖栭獙璇?===
+  [PASS] EKF 鍥涘厓鏁颁繚鎸佸綊涓€鍖?
+  [PASS] Mahony 鍥涘厓鏁颁繚鎸佸綊涓€鍖?
+  [PASS] Madgwick 鍥涘厓鏁颁繚鎸佸綊涓€鍖?
+
+=== 娴嬭瘯7锛歂aN/Inf杈撳叆淇濇姢 ===
+  [PASS] Complementary NaN杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] Complementary Inf杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] Complementary dt=0杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] LPF NaN杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] LPF Inf杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] LPF dt=0杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] EKF NaN杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] EKF Inf杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] EKF dt=0杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] LKF NaN杈撳叆鍚庤緭鍑虹ǔ瀹?
+  [PASS] LKF Inf杈撳

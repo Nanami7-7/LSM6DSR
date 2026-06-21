@@ -1,0 +1,210 @@
+========================================
+  IMU滤波器数学验证测试
+========================================
+测试配置：dt=0.010s, 迭代=1000, 容差=0.5°
+
+=== 测试1：滤波器创建和销毁 ===
+  [PASS] Complementary 创建成功
+  [PASS] Complementary 类型正确
+  [PASS] Complementary update函数非空
+  [PASS] Complementary priv数据非空
+  [PASS] LPF 创建成功
+  [PASS] LPF 类型正确
+  [PASS] LPF update函数非空
+  [PASS] LPF priv数据非空
+  [PASS] EKF 创建成功
+  [PASS] EKF 类型正确
+  [PASS] EKF update函数非空
+  [PASS] EKF priv数据非空
+  [PASS] LKF 创建成功
+  [PASS] LKF 类型正确
+  [PASS] LKF update函数非空
+  [PASS] LKF priv数据非空
+  [PASS] Mahony 创建成功
+  [PASS] Mahony 类型正确
+  [PASS] Mahony update函数非空
+  [PASS] Mahony priv数据非空
+  [PASS] Madgwick 创建成功
+  [PASS] Madgwick 类型正确
+  [PASS] Madgwick update函数非空
+  [PASS] Madgwick priv数据非空
+  [PASS] 无效类型返回NULL
+
+=== 测试2：静态姿态 - 水平放置 ===
+  [PASS] Complementary pitch≈0° (实际=0.00°)
+  [PASS] Complementary roll≈0° (实际=0.00°)
+  [PASS] Complementary 输出有效
+  [PASS] LPF pitch≈0° (实际=0.00°)
+  [PASS] LPF roll≈0° (实际=0.00°)
+  [PASS] LPF 输出有效
+  [PASS] EKF pitch≈0° (实际=-0.00°)
+  [PASS] EKF roll≈0° (实际=0.00°)
+  [PASS] EKF 输出有效
+  [PASS] LKF pitch≈0° (实际=0.00°)
+  [PASS] LKF roll≈0° (实际=0.00°)
+  [PASS] LKF 输出有效
+  [PASS] Mahony pitch≈0° (实际=-0.00°)
+  [PASS] Mahony roll≈0° (实际=0.00°)
+  [PASS] Mahony 输出有效
+  [PASS] Madgwick pitch≈0° (实际=-0.00°)
+  [PASS] Madgwick roll≈0° (实际=0.00°)
+  [PASS] Madgwick 输出有效
+
+=== 测试3：静态姿态 - 俯仰45度 ===
+  [PASS] Complementary pitch≈45° (实际=45.00°)
+  [PASS] Complementary roll≈0° (实际=0.00°)
+  [PASS] LPF pitch≈45° (实际=45.00°)
+  [PASS] LPF roll≈0° (实际=0.00°)
+  [PASS] EKF pitch≈45° (实际=45.00°)
+  [PASS] EKF roll≈0° (实际=0.00°)
+  [PASS] LKF pitch≈45° (实际=45.00°)
+  [PASS] LKF roll≈0° (实际=0.00°)
+  [PASS] Mahony pitch≈45° (实际=45.00°)
+  [PASS] Mahony roll≈0° (实际=0.00°)
+  [PASS] Madgwick pitch≈45° (实际=44.96°)
+  [PASS] Madgwick roll≈0° (实际=0.00°)
+
+=== 测试4：静态姿态 - 横滚45度 ===
+  [PASS] Complementary pitch≈0° (实际=0.00°)
+  [PASS] Complementary roll≈45° (实际=45.00°)
+  [PASS] LPF pitch≈0° (实际=0.00°)
+  [PASS] LPF roll≈45° (实际=45.00°)
+  [PASS] EKF pitch≈0° (实际=-0.00°)
+  [PASS] EKF roll≈45° (实际=45.00°)
+  [PASS] LKF pitch≈0° (实际=0.00°)
+  [PASS] LKF roll≈45° (实际=45.00°)
+  [PASS] Mahony pitch≈0° (实际=-0.00°)
+  [PASS] Mahony roll≈45° (实际=45.00°)
+  [PASS] Madgwick pitch≈0° (实际=-0.00°)
+  [PASS] Madgwick roll≈45° (实际=44.96°)
+
+=== 测试5：动态旋转 - 恒定角速度积分 ===
+  [PASS] Complementary yaw≈100° (实际=100.00°)
+  [PASS] Complementary 动态输出有效
+  [PASS] LPF yaw≈100° (实际=100.00°)
+  [PASS] LPF 动态输出有效
+  [PASS] EKF yaw≈100° (实际=100.00°)
+  [PASS] EKF 动态输出有效
+  [PASS] LKF yaw≈100° (实际=100.00°)
+  [PASS] LKF 动态输出有效
+  [PASS] Mahony yaw≈100° (实际=100.00°)
+  [PASS] Mahony 动态输出有效
+  [PASS] Madgwick yaw≈100° (实际=100.00°)
+  [PASS] Madgwick 动态输出有效
+
+=== 测试6：四元数归一化验证 ===
+  [PASS] EKF 四元数保持归一化
+  [PASS] Mahony 四元数保持归一化
+  [PASS] Madgwick 四元数保持归一化
+
+=== 测试7：NaN/Inf输入保护 ===
+  [PASS] Complementary NaN输入后输出稳定
+  [PASS] Complementary Inf输入后输出稳定
+  [PASS] Complementary dt=0输入后输出稳定
+  [PASS] LPF NaN输入后输出稳定
+  [PASS] LPF Inf输入后输出稳定
+  [PASS] LPF dt=0输入后输出稳定
+  [PASS] EKF NaN输入后输出稳定
+  [PASS] EKF Inf输入后输出稳定
+  [PASS] EKF dt=0输入后输出稳定
+  [PASS] LKF NaN输入后输出稳定
+  [PASS] LKF Inf输入后输出稳定
+  [PASS] LKF dt=0输入后输出稳定
+  [PASS] Mahony NaN输入后输出稳定
+  [PASS] Mahony Inf输入后输出稳定
+  [PASS] Mahony dt=0输入后输出稳定
+  [PASS] Madgwick NaN输入后输出稳定
+  [PASS] Madgwick Inf输入后输出稳定
+  [PASS] Madgwick dt=0输入后输出稳定
+
+=== 测试8：重置功能 ===
+  [PASS] Complementary 重置后pitch≈0° (实际=0.00°)
+  [PASS] Complementary 重置后roll≈0° (实际=0.00°)
+  [PASS] LPF 重置后pitch≈0° (实际=0.00°)
+  [PASS] LPF 重置后roll≈0° (实际=0.00°)
+  [PASS] EKF 重置后pitch≈0° (实际=-0.00°)
+  [PASS] EKF 重置后roll≈0° (实际=0.00°)
+  [PASS] LKF 重置后pitch≈0° (实际=0.00°)
+  [PASS] LKF 重置后roll≈0° (实际=0.00°)
+  [PASS] Mahony 重置后pitch≈0° (实际=-0.00°)
+  [PASS] Mahony 重置后roll≈0° (实际=0.00°)
+  [PASS] Madgwick 重置后pitch≈0° (实际=-0.00°)
+  [PASS] Madgwick 重置后roll≈0° (实际=0.00°)
+
+=== 测试9：长时间运行稳定性 (10000帧) ===
+  [PASS] Complementary 10000帧稳定运行
+  [PASS] Complementary 最终输出有效
+  [PASS] LPF 10000帧稳定运行
+  [PASS] LPF 最终输出有效
+  [PASS] EKF 10000帧稳定运行
+  [PASS] EKF 最终输出有效
+  [PASS] LKF 10000帧稳定运行
+  [PASS] LKF 最终输出有效
+  [PASS] Mahony 10000帧稳定运行
+  [PASS] Mahony 最终输出有效
+  [PASS] Madgwick 10000帧稳定运行
+  [PASS] Madgwick 最终输出有效
+
+=== 测试10：参数设置 ===
+  [PASS] 互补滤波器 set_param(alpha=0.5) 后输出有效
+  [PASS] LPF set_param(cutoff=5Hz) 后输出有效
+  [PASS] EKF set_param 后输出有效
+  [PASS] Mahony set_param(kp=10, ki=0.1) 后输出有效
+  [PASS] Madgwick set_param(beta=0.5) 后输出有效
+
+=== 测试11：ACC幅值异常保护 ===
+  [PASS] EKF ACC幅值过小时输出稳定
+  [PASS] EKF ACC幅值过大时输出稳定
+
+=== 测试12：滤波器类型名称 ===
+  [PASS] 互补滤波器名称正确
+  [PASS] LPF名称正确
+  [PASS] EKF名称正确
+  [PASS] Mahony名称正确
+  [PASS] Madgwick名称正确
+  [PASS] 无效类型返回Unknown
+
+=== 测试13：安全保护API ===
+  [PASS] 有效输出通过验证
+  [PASS] NaN输出被拒绝
+  [PASS] Inf输出被拒绝
+  [PASS] 四元数归一化: q0=1.0
+  [PASS] 四元数归一化: q1=0.0
+  [PASS] 正常ACC幅值(1g)
+  [PASS] 异常ACC幅值(0.1g)
+  [PASS] 异常ACC幅值(5g)
+  [PASS] 正常GYRO值
+  [PASS] GYRO饱和(2000dps)
+  [PASS] 安全配置设置: angle_min
+  [PASS] 安全配置设置: angle_max
+
+=== 测试14：退化模式API ===
+  [PASS] 退化名称: None
+  [PASS] 退化名称: GyroOnly
+  [PASS] 退化名称: AccOnly
+  [PASS] 退化名称: HoldLast
+  [PASS] 退化模式设置: GYRO_ONLY
+  [PASS] 退化模式清除: NONE
+
+=== 测试15：静态分配 ===
+  [PASS] 静态大小>0
+  [PASS] 静态分配类型正确
+  [PASS] 静态大小>0
+  [PASS] 静态分配类型正确
+  [PASS] 静态大小>0
+  [PASS] 静态分配类型正确
+  [PASS] 静态大小>0
+  [PASS] 静态分配类型正确
+  [PASS] 静态大小>0
+  [PASS] 静态分配类型正确
+  [PASS] 静态大小>0
+  [PASS] 静态分配类型正确
+
+========================================
+  测试总结
+========================================
+  总测试数: 167
+  通过: 167
+  失败: 0
+  通过率: 100.0%
+========================================

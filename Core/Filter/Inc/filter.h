@@ -32,12 +32,13 @@
  * @code
  *   #include "filter.h"
  *
- *   filter_t *f = filter_create(FILTER_TYPE_MADGWICK);
+ *   static uint8_t buf[512] __attribute__((aligned(4)));
+ *   filter_t *f = filter_create_static(FILTER_TYPE_MADGWICK, buf, sizeof(buf));
  *   filter_input_t in = { .ax=ax, .ay=ay, .az=az, .gx=gx, .gy=gy, .gz=gz, .dt=0.01f };
  *   filter_output_t out;
  *   f->update(f, &in, &out);
  *   printf("pitch=%.2f roll=%.2f yaw=%.2f\n", out.pitch, out.roll, out.yaw);
- *   f->destroy(f);
+ *   // 无需调用destroy
  * @endcode
  *
  * @see filter_config.h  参数配置与退化策略
@@ -48,6 +49,8 @@
 #define FILTER_H
 
 #include <stdint.h>
+#include <stddef.h>
+#include "filter_platform.h"  /* FILTER_ALLOW_DYNAMIC 宏 */
 
 #ifdef __cplusplus
 extern "C" {
@@ -126,12 +129,6 @@ typedef void (*filter_reset_fn)(filter_t *self);
  */
 typedef void (*filter_set_param_fn)(filter_t *self, filter_param_t param, float value);
 
-/**
- * @brief 滤波器销毁函数类型
- * @param self  滤波器实例指针
- */
-typedef void (*filter_destroy_fn)(filter_t *self);
-
 /* ---- 数值安全保护配置 ---- */
 typedef struct {
     float angle_min;        /**< 角度最小值 (度) */
@@ -155,25 +152,28 @@ struct filter {
     filter_update_fn    update;     /**< 更新函数 */
     filter_reset_fn     reset;      /**< 重置函数 */
     filter_set_param_fn set_param;  /**< 参数设置函数 */
-    filter_destroy_fn   destroy;    /**< 销毁函数（释放私有数据） */
     filter_type_t       type;       /**< 滤波器类型 */
     filter_degrade_t    degrade;    /**< 退化模式（传感器数据异常时降级） */
     void               *priv;       /**< 私有数据指针 */
-    uint8_t             is_static;  /**< 是否静态分配（1=静态，0=动态） */
     filter_safety_config_t safety_config; /**< 安全保护配置 */
 };
 
 
-/* ---- 工厂函数 ---- */
+/* ---- 工厂函数（仅静态分配，MCU专用） ---- */
 
 /**
- * @brief 创建滤波器实例
+ * @brief 创建滤波器实例（静态分配，MCU专用）
  * @param type  滤波器类型
+ * @param buf   预分配的缓冲区（大小需 >= filter_get_static_size(type)）
+ * @param buf_size  缓冲区大小
  * @return 滤波器指针，失败返回 NULL
+ *
+ * MCU友好：不使用malloc/free，适合无MMU的嵌入式系统
  *
  * 使用示例：
  * @code
- *   filter_t *f = filter_create(FILTER_TYPE_MADGWICK);
+ *   static uint8_t buf[512] __attribute__((aligned(4)));
+ *   filter_t *f = filter_create_static(FILTER_TYPE_MADGWICK, buf, sizeof(buf));
  *   if (!f) { error handling... }
  *
  *   filter_input_t in = { .ax=ax, .ay=ay, .az=az, .gx=gx, .gy=gy, .gz=gz, .dt=dt };
@@ -181,20 +181,8 @@ struct filter {
  *   f->update(f, &in, &out);
  *
  *   printf("pitch=%.2f roll=%.2f yaw=%.2f\n", out.pitch, out.roll, out.yaw);
- *
- *   f->destroy(f);  // 释放资源
+ *   // 无需调用destroy
  * @endcode
- */
-filter_t* filter_create(filter_type_t type);
-
-/**
- * @brief 静态创建滤波器实例（无动态内存分配）
- * @param type  滤波器类型
- * @param buf   预分配的缓冲区（大小需 >= filter_get_static_size(type)）
- * @param buf_size  缓冲区大小
- * @return 滤波器指针，失败返回 NULL
- *
- * MCU友好：不使用malloc/free，适合无MMU的嵌入式系统
  */
 filter_t* filter_create_static(filter_type_t type, void *buf, size_t buf_size);
 
@@ -204,6 +192,17 @@ filter_t* filter_create_static(filter_type_t type, void *buf, size_t buf_size);
  * @return 所需字节数
  */
 size_t filter_get_static_size(filter_type_t type);
+
+/**
+ * @brief 动态创建滤波器实例（仅 PC 测试，FILTER_ALLOW_DYNAMIC 时可用）
+ * @param type  滤波器类型
+ * @return 滤波器指针，失败返回 NULL
+ * @warning MCU 永不编译此函数。PC 测试用 -DFILTER_ALLOW_DYNAMIC 启用。
+ */
+#if defined(FILTER_ALLOW_DYNAMIC)
+filter_t* filter_create(filter_type_t type);
+void     filter_destroy(filter_t *f);
+#endif
 
 /**
  * @brief 设置滤波器安全配置
@@ -272,6 +271,24 @@ int filter_check_acc_quality(float ax, float ay, float az);
  * @return 1=正常（未饱和）, 0=异常
  */
 int filter_check_gyro_quality(float gx, float gy, float gz);
+
+/* ============================================================
+ * API 版本与 ABI 自检
+ * ============================================================ */
+
+/** 滤波器库 API 版本（SemVer 主版本），ABI 不兼容改动时递增 */
+#define FILTER_API_VERSION 1
+
+/* _Static_assert 依赖 abi_expected.h（由 scripts/gen_abi_header.py 生成），
+ * 在 include 链底部闭合后生效。filter.h 顶部 include filter_platform.h，
+ * abi_expected.h 应在此处被包含（或由用户显式 include）。
+ * 
+ * 若编译失败提示 "filter_t size changed"，说明 ABI 被破坏，
+ * 需更新 abi_expected.h（在 master 上运行 scripts/gen_abi_header.py）。 */
+#if defined(FILTER_ABI_SIZEOF_FILTER_T) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(filter_t) == FILTER_ABI_SIZEOF_FILTER_T,
+    "filter_t size changed \37777777742\37777777600\37777777624 ABI break: run scripts/gen_abi_header.py on master");
+#endif
 
 #ifdef __cplusplus
 }
