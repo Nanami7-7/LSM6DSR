@@ -186,5 +186,3 @@ const char* bsp_lsm6dsr_get_filter_name(void);
 /**@}*/
 
 #endif /* BSP_LSM6DSR_H */
-
-#endif /* BSP_LSM6DSR_H */

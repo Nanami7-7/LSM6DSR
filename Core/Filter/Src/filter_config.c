@@ -4,6 +4,7 @@
  */
 
 #include "../Inc/filter_config.h"
+#include "../Inc/filter_platform.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -347,21 +348,21 @@ sensor_quality_t filter_config_assess_quality(float ax, float ay, float az,
                                                float gx, float gy, float gz)
 {
     /* 检查NaN/Inf */
-    if (isnan(ax) || isnan(ay) || isnan(az) ||
-        isnan(gx) || isnan(gy) || isnan(gz) ||
-        isinf(ax) || isinf(ay) || isinf(az) ||
-        isinf(gx) || isinf(gy) || isinf(gz)) {
+    if (fp_isnan(ax) || fp_isnan(ay) || fp_isnan(az) ||
+        fp_isnan(gx) || fp_isnan(gy) || fp_isnan(gz) ||
+        fp_isinf(ax) || fp_isinf(ay) || fp_isinf(az) ||
+        fp_isinf(gx) || fp_isinf(gy) || fp_isinf(gz)) {
         return SENSOR_QUALITY_INVALID;
     }
 
     /* 检查ACC幅值 */
-    float acc_mag = sqrtf(ax*ax + ay*ay + az*az);
+    float acc_mag = fp_sqrt(ax*ax + ay*ay + az*az);
     if (acc_mag < DEGRADE_ACC_LOW || acc_mag > DEGRADE_ACC_HIGH) {
         return SENSOR_QUALITY_SATURATED;
     }
 
     /* 检查GYRO幅值 */
-    float gyro_mag = sqrtf(gx*gx + gy*gy + gz*gz);
+    float gyro_mag = fp_sqrt(gx*gx + gy*gy + gz*gz);
     if (gyro_mag > DEGRADE_GYRO_THRESHOLD) {
         return SENSOR_QUALITY_SATURATED;
     }

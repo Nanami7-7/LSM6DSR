@@ -45,7 +45,9 @@ def run_git(args: List[str], capture: bool = False) -> Tuple[int, str, str]:
     cmd = ["git"] + args
     if capture:
         result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        return result.returncode, stdout, stderr
     else:
         result = subprocess.run(cmd)
         return result.returncode, "", ""
@@ -108,7 +110,82 @@ def get_conflict_files() -> List[str]:
     return out.split("\n") if rc == 0 and out else []
 
 
-# === 主逻辑 ==========================================================
+# === 接口完整性检查 ==================================================
+
+# 冻结文件列表（必须与 master 字节一致）
+FROZEN_HEADERS = [
+    "Core/Filter/Inc/filter.h",
+    "Core/Filter/Inc/filter_config.h",
+    "Core/Filter/Inc/filter_platform.h",
+    "Core/Filter/Inc/filter_math.h",
+    "Core/Filter/Inc/abi_expected.h",
+]
+
+FROZEN_SRCS = [
+    "Core/Filter/Src/filter_factory.c",
+    "Core/Filter/Src/filter_common.c",
+    "Core/Filter/Src/filter_internal.h",
+    "Core/Filter/Src/filter_config.c",
+]
+
+FROZEN_FILTER_IMPLS = [
+    "Core/Filter/Src/filter_complementary.c",
+    "Core/Filter/Src/filter_lpf.c",
+    "Core/Filter/Src/filter_ekf.c",
+    "Core/Filter/Src/filter_lkf.c",
+    "Core/Filter/Src/filter_mahony.c",
+    "Core/Filter/Src/filter_madgwick.c",
+]
+
+FROZEN_FILES = FROZEN_HEADERS + FROZEN_SRCS + FROZEN_FILTER_IMPLS
+
+
+def check_interface_for_branch(branch: str) -> bool:
+    """检查分支与 master 的冻结文件是否一致"""
+    print(f"\n--- 检查接口完整性: {branch} vs {MASTER_BRANCH} ---")
+    all_ok = True
+
+    # 1. 前置检查：分支是否包含冻结文件
+    for f in FROZEN_FILES:
+        rc, _, _ = run_git(["ls-tree", "-r", branch, "--", f], capture=True)
+        if rc != 0 or not _:
+            print(f"  ⚠️  {f} 在 {branch} 分支上不存在")
+            all_ok = False
+            continue
+
+        rc, _, _ = run_git(["diff", "--quiet", MASTER_BRANCH, branch, "--", f],
+                           capture=True)
+        if rc != 0:
+            print(f"  ❌ {f} 已漂移")
+            all_ok = False
+        else:
+            print(f"  ✅ {f} 字节一致")
+
+    if all_ok:
+        print(f"\n  ✅ {branch} 接口完整性检查通过")
+    else:
+        print(f"\n  ❌ {branch} 接口完整性检查失败 — 禁止同步")
+
+    return all_ok
+
+
+def check_interface_all(dry_run: bool = False) -> int:
+    """检查所有平台分支的接口完整性"""
+    print("=== 接口完整性检查 ===\n")
+    print(f"冻结文件数: {len(FROZEN_FILES)}")
+    print(f"平台分支数: {len(PLATFORM_BRANCHES)}")
+
+    fail_count = 0
+    for branch in PLATFORM_BRANCHES:
+        if not branch_exists(branch):
+            print(f"\n--- {branch}: 分支不存在，跳过 ---")
+            continue
+        if not check_interface_for_branch(branch):
+            fail_count += 1
+
+    print(f"\n=== 检查完成: {fail_count}/{len(PLATFORM_BRANCHES)} 个分支失败 ===")
+    return fail_count
+
 
 def sync_branch(platform_branch: str, dry_run: bool = False, force: bool = False) -> bool:
     """同步 master 到指定平台分支"""
@@ -171,7 +248,14 @@ def main():
     parser.add_argument("--branch", type=str, help="只同步指定分支")
     parser.add_argument("--force", action="store_true", help="强制同步（丢弃平台本地修改）")
     parser.add_argument("--all", action="store_true", help="同步所有分支（包括不存在的）")
+    parser.add_argument("--check-interface", action="store_true",
+                        help="检查平台分支的冻结文件完整性（不执行合并）")
     args = parser.parse_args()
+
+    # --- 接口检查模式 ---
+    if args.check_interface:
+        fail_count = check_interface_all(dry_run=False)
+        sys.exit(fail_count)
 
     print("=== LSM6DSR 平台同步脚本 ===")
     print(f"源分支: {MASTER_BRANCH}")

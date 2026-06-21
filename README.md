@@ -28,6 +28,7 @@
 - 零成本抽象：函数指针调用，无虚函数表开销
 - 可扩展：添加新滤波器只需实现 `filter_t` 接口的四个函数指针
 - 向后兼容：保留原有互补滤波器作为默认类型
+- MCU友好：支持静态分配，无动态内存依赖
 
 ### 滤波器类型
 
@@ -67,11 +68,12 @@
 
 | 函数 | 说明 |
 |------|------|
-| `filter_create(type)` | 创建滤波器实例 |
+| `filter_create(type)` | 创建滤波器实例（动态分配，仅PC测试） |
+| `filter_create_static(type, buf, size)` | 创建滤波器实例（静态分配，MCU推荐） |
 | `f->update(f, &in, &out)` | 执行一步滤波更新 |
 | `f->reset(f)` | 重置滤波器状态 |
 | `f->set_param(f, param, value)` | 运行时设置参数 |
-| `f->destroy(f)` | 释放滤波器资源 |
+| `f->destroy(f)` | 释放滤波器资源（静态分配时无需调用） |
 | `filter_type_name(type)` | 获取类型名称字符串 |
 
 **退化与质量评估**
@@ -93,6 +95,7 @@
 
 ### 使用示例
 
+**PC测试（动态分配）**
 ```c
 #include "filter.h"
 #include "filter_config.h"
@@ -118,6 +121,33 @@ while (1) {
 
 /* 释放 */
 f->destroy(f);
+```
+
+**嵌入式系统（静态分配，推荐）**
+```c
+#include "filter.h"
+#include "filter_config.h"
+
+/* 静态缓冲区 */
+static uint8_t filter_buf[512] __attribute__((aligned(4)));
+
+/* 创建滤波器 */
+size_t size = filter_get_static_size(FILTER_TYPE_MADGWICK);
+assert(size <= sizeof(filter_buf));
+filter_t *f = filter_create_static(FILTER_TYPE_MADGWICK, filter_buf, sizeof(filter_buf));
+if (!f) { /* 错误处理 */ }
+
+/* 循环更新（无需调用destroy） */
+while (1) {
+    filter_input_t in = {
+        .ax = acc[0], .ay = acc[1], .az = acc[2],
+        .gx = gyro[0], .gy = gyro[1], .gz = gyro[2],
+        .dt = 0.01f
+    };
+    filter_output_t out;
+    f->update(f, &in, &out);
+    // 使用输出...
+}
 ```
 
 **运行时切换滤波器**
@@ -147,9 +177,21 @@ if (!filter_check_acc_quality(ax, ay, az)) {
 - `bsp_lsm6dsr_set_filter(type)` — 切换滤波器类型
 - `bsp_lsm6dsr_set_filter_param(param, value)` — 设置滤波器参数
 
+### 编译选项
+
+| 宏定义 | 说明 |
+|--------|------|
+| `FILTER_DISABLE_DYNAMIC_ALLOC` | 禁用动态内存分配，仅允许静态分配（推荐嵌入式使用） |
+| `FILTER_STATIC_ONLY` | 内部宏，由 `FILTER_DISABLE_DYNAMIC_ALLOC` 自动定义 |
+
+**嵌入式系统推荐编译选项：**
+```bash
+gcc -DFILTER_DISABLE_DYNAMIC_ALLOC ...
+```
+
 ### 测试
 
-滤波器库包含 137 个单元测试，覆盖所有滤波器类型、退化模式、参数验证和边界条件，全部通过。
+滤波器库包含 179 个单元测试，覆盖所有滤波器类型、退化模式、参数验证和边界条件，全部通过。
 
 ## 平台支持
 

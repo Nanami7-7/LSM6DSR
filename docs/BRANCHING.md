@@ -398,3 +398,18 @@ git log --oneline master..stm32f407
 # 查看通用文件在各分支的差异
 git diff master..stm32f407 -- Core/Src/lsm6dsr.c
 ```
+
+### 8. 滤波器库分支契约
+
+滤波器库（`Core/Filter/`）有更严格的分支规则，详见：
+- `Core/Filter/Doc/INTERFACE.md` — 冻结接口规范
+- `Core/Filter/Doc/BRANCH_CONTRACT.md` — 分支 CAN/CANNOT 表 + 覆盖机制
+- `Core/Filter/Inc/abi_expected.h` — 编译期 ABI 锁（由 `scripts/gen_abi_header.py` 生成）
+- `test/abi_check.c` — 运行时 ABI 完整性验证
+
+**关键约束：** 分支不得修改 `filter.h`、`filter_config.h`、`filter_platform.h`、`filter_factory.c`、`filter_common.c`、6 个参考实现 `filter_<type>.c`。优化通过弱符号覆盖（`opt_<mcu>/` 目录）实现。
+
+**同步前检查：**
+```bash
+python3 scripts/sync-to-platforms.py --check-interface
+```
